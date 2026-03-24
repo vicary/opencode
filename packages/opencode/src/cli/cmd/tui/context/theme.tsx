@@ -350,6 +350,8 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
 
     onMount(init)
 
+    let system = ""
+
     function resolveSystemTheme(mode: "dark" | "light" = store.mode) {
       return renderer
         .getPalette({
@@ -357,6 +359,7 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
         })
         .then((colors: TerminalColors) => {
           if (!colors.palette[0]) {
+            system = ""
             systemTheme = undefined
             syncThemes()
             if (store.active === "system") {
@@ -364,10 +367,27 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
             }
             return
           }
+          const next = JSON.stringify({
+            bg: colors.defaultBackground,
+            fg: colors.defaultForeground,
+            mode,
+            palette: colors.palette,
+          })
+          if (next === system) {
+            if (store.active === "system" && !store.ready) {
+              setStore("ready", true)
+            }
+            return
+          }
+          system = next
           systemTheme = generateSystem(colors, mode)
           syncThemes()
+          if (store.active === "system" && !store.ready) {
+            setStore("ready", true)
+          }
         })
         .catch(() => {
+          system = ""
           systemTheme = undefined
           syncThemes()
           if (store.active === "system") {
@@ -413,6 +433,12 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     onCleanup(() => {
       renderer.off(CliRenderEvents.THEME_MODE, handle)
       process.off("SIGUSR2", refresh)
+    })
+
+    createEffect(() => {
+      if (store.active !== "system") return
+      const timer = setInterval(refresh, 10000)
+      onCleanup(() => clearInterval(timer))
     })
 
     const values = createMemo(() => {
