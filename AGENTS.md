@@ -3,6 +3,9 @@
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
+- Production CLI build for local update testing: run `OPENCODE_CHANNEL=latest OPENCODE_VERSION=1.3.1-preview.<stamp> bun run build --single` from `packages/opencode`.
+- After a production-flavored local build, double check `~/.opencode/bin/opencode --version` reports the expected custom version based on the rebased release and `~/.opencode/bin/opencode --print-logs stats` logs `service=db path=.../opencode.db opening database` rather than a channel-specific DB like `opencode-fix-vicary.db`.
+- If the local `PATH` does not include `~/.opencode/bin`, `opencode` may resolve to a Homebrew-installed binary instead. Add `~/.opencode/bin` to shell env vars first (for example in `~/.zshrc`) before relying on plain `opencode` checks.
 
 ## Commits and PR Titles
 
