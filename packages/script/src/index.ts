@@ -1,13 +1,21 @@
 import { $ } from "bun"
 import semver from "semver"
 import path from "path"
+import { preview } from "./version"
 
 const rootPkgPath = path.resolve(import.meta.dir, "../../../package.json")
 const rootPkg = await Bun.file(rootPkgPath).json()
+const cliPkgPath = path.resolve(import.meta.dir, "../../opencode/package.json")
+const cliPkg = await Bun.file(cliPkgPath).json()
 const expectedBunVersion = rootPkg.packageManager?.split("@")[1]
+const base = cliPkg.version
 
 if (!expectedBunVersion) {
   throw new Error("packageManager field not found in root package.json")
+}
+
+if (typeof base !== "string") {
+  throw new Error("version field not found in packages/opencode/package.json")
 }
 
 // relax version requirement
@@ -23,6 +31,7 @@ const env = {
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
   OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
 }
+const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")
 const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
   if (env.OPENCODE_BUMP) return "latest"
@@ -33,7 +42,8 @@ const IS_PREVIEW = CHANNEL !== "latest"
 
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
-  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+  if (IS_PREVIEW && !env.OPENCODE_CHANNEL) return preview(base, stamp)
+  if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${stamp}`
   const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
     .then((res) => {
       if (!res.ok) throw new Error(res.statusText)
