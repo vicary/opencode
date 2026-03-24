@@ -819,6 +819,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
             })
           }
+
           if (part.state.status === "error") {
             const output = part.state.metadata?.interrupted === true ? part.state.metadata.output : undefined
             if (typeof output === "string") {
@@ -843,9 +844,8 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               })
             }
           }
-          // Handle pending/running tool calls to prevent dangling tool_use blocks
-          // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
-          if (part.state.status === "pending" || part.state.status === "running")
+
+          if (part.state.status === "running")
             assistantMessage.parts.push({
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-error",
@@ -855,7 +855,10 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
             })
+
+          continue
         }
+
         if (part.type === "reasoning") {
           if (differentModel) {
             if (part.text.trim().length > 0)
@@ -872,10 +875,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           })
         }
       }
+
       if (assistantMessage.parts.length > 0) {
         result.push(assistantMessage)
-        // Inject pending media as a user message for providers that don't support
-        // media (images, PDFs) in tool results
         if (media.length > 0) {
           result.push({
             id: MessageID.ascending(),

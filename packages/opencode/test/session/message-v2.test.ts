@@ -58,6 +58,22 @@ const model: Provider.Model = {
   release_date: "2026-01-01",
 }
 
+const modelWithoutToolResultMedia: Provider.Model = {
+  ...model,
+  api: {
+    ...model.api,
+    npm: "@ai-sdk/mistral",
+  },
+  capabilities: {
+    ...model.capabilities,
+    input: {
+      ...model.capabilities.input,
+      image: true,
+      pdf: true,
+    },
+  },
+}
+
 function userInfo(id: string): MessageV2.User {
   return {
     id,
@@ -1164,7 +1180,7 @@ describe("session.message-v2.toModelMessage", () => {
     expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([])
   })
 
-  test("converts pending/running tool calls to error results to prevent dangling tool_use", async () => {
+  test("omits pending tool-input stubs from replay context", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
 
@@ -1186,13 +1202,43 @@ describe("session.message-v2.toModelMessage", () => {
             ...basePart(assistantID, "a1"),
             type: "tool",
             callID: "call-pending",
-            tool: "bash",
+            tool: "write",
             state: {
               status: "pending",
-              input: { cmd: "ls" },
+              input: {},
               raw: "",
             },
           },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "run tool" }],
+      },
+    ])
+  })
+
+  test("converts interrupted running tool calls to error results", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1"),
+            type: "text",
+            text: "run tool",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
           {
             ...basePart(assistantID, "a2"),
             type: "tool",
@@ -1208,9 +1254,7 @@ describe("session.message-v2.toModelMessage", () => {
       },
     ]
 
-    const result = await MessageV2.toModelMessages(input, model)
-
-    expect(result).toStrictEqual([
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
       {
         role: "user",
         content: [{ type: "text", text: "run tool" }],
@@ -1218,13 +1262,6 @@ describe("session.message-v2.toModelMessage", () => {
       {
         role: "assistant",
         content: [
-          {
-            type: "tool-call",
-            toolCallId: "call-pending",
-            toolName: "bash",
-            input: { cmd: "ls" },
-            providerExecuted: undefined,
-          },
           {
             type: "tool-call",
             toolCallId: "call-running",
@@ -1239,12 +1276,6 @@ describe("session.message-v2.toModelMessage", () => {
         content: [
           {
             type: "tool-result",
-            toolCallId: "call-pending",
-            toolName: "bash",
-            output: { type: "error-text", value: "[Tool execution was interrupted]" },
-          },
-          {
-            type: "tool-result",
             toolCallId: "call-running",
             toolName: "read",
             output: { type: "error-text", value: "[Tool execution was interrupted]" },
@@ -1254,6 +1285,7 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+<<<<<<< HEAD
   test("substitutes space for empty text between signed reasoning blocks", async () => {
     // Reproduces the bug pattern: [reasoning(sig), text(""), reasoning(sig), text(full)]
     const assistantID = "m-assistant"
@@ -1355,6 +1387,107 @@ describe("session.message-v2.toModelMessage", () => {
     expect(result).toHaveLength(1)
     const texts = (result[0].content as any[]).filter((p) => p.type === "text")
     expect(texts.map((t) => t.text)).toStrictEqual(["", "hello"])
+  })
+
+  test("keeps reasoning and injects tool media once per assistant turn", async () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1"),
+            type: "text",
+            text: "run tool",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "reasoning",
+            text: "thinking",
+            time: { start: 0 },
+          },
+          {
+            ...basePart(assistantID, "a2"),
+            type: "tool",
+            callID: "call-1",
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { cmd: "ls" },
+              output: "ok",
+              title: "Bash",
+              metadata: {},
+              time: { start: 0, end: 1 },
+              attachments: [
+                {
+                  ...basePart(assistantID, "file-1"),
+                  type: "file",
+                  mime: "image/png",
+                  filename: "attachment.png",
+                  url: "data:image/png;base64,Zm9v",
+                },
+              ],
+            },
+          },
+          {
+            ...basePart(assistantID, "a3"),
+            type: "text",
+            text: "done",
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, modelWithoutToolResultMedia)).toStrictEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "run tool" }],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "thinking", providerOptions: undefined },
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "bash",
+            input: { cmd: "ls" },
+            providerExecuted: undefined,
+          },
+          { type: "text", text: "done" },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "bash",
+            output: { type: "text", value: "ok" },
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: MessageV2.SYNTHETIC_ATTACHMENT_PROMPT },
+          {
+            type: "file",
+            mediaType: "image/png",
+            filename: undefined,
+            data: "data:image/png;base64,Zm9v",
+          },
+        ],
+      },
+    ])
   })
 })
 
