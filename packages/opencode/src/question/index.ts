@@ -2,6 +2,7 @@ import { Deferred, Effect, Layer, Schema, Context } from "effect"
 import { Bus } from "@/bus"
 import { BusEvent } from "@/bus/bus-event"
 import { InstanceState } from "@/effect/instance-state"
+import { Session } from "@/session"
 import { SessionID, MessageID } from "@/session/schema"
 import * as Log from "@opencode-ai/core/util/log"
 import { QuestionID } from "./schema"
@@ -117,6 +118,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+    const sessions = yield* Session.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
         const state = {
@@ -136,6 +138,14 @@ export const layer = Layer.effect(
       }),
     )
 
+    const rootSessionID: (sessionID: SessionID) => Effect.Effect<SessionID> = Effect.fn("Question.rootSessionID")(
+      function* (sessionID: SessionID) {
+        const current = yield* sessions.get(sessionID).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        if (!current?.parentID) return current?.id ?? sessionID
+        return yield* rootSessionID(current.parentID)
+      },
+    )
+
     const ask = Effect.fn("Question.ask")(function* (input: {
       sessionID: SessionID
       questions: ReadonlyArray<Info>
@@ -143,12 +153,13 @@ export const layer = Layer.effect(
     }) {
       const pending = (yield* InstanceState.get(state)).pending
       const id = QuestionID.ascending()
+      const sessionID = yield* rootSessionID(input.sessionID)
       log.info("asking", { id, questions: input.questions.length })
 
       const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
       const info = Schema.decodeUnknownSync(Request)({
         id,
-        sessionID: input.sessionID,
+        sessionID,
         questions: input.questions,
         tool: input.tool,
       })
@@ -208,6 +219,6 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+export const defaultLayer = layer.pipe(Layer.provide(Session.defaultLayer), Layer.provide(Bus.layer))
 
 export * as Question from "."

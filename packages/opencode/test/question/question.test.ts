@@ -4,15 +4,14 @@ import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceRuntime } from "../../src/project/instance-runtime"
 import { QuestionID } from "../../src/question/schema"
+import { Session } from "../../src/session"
 import { disposeAllInstances, provideInstance, reloadTestInstance, tmpdirScoped } from "../fixture/fixture"
 import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Bus } from "../../src/bus"
 
-const it = testEffect(
-  Layer.mergeAll(Question.layer.pipe(Layer.provideMerge(Bus.layer)), CrossSpawnSpawner.defaultLayer),
-)
+const it = testEffect(Layer.mergeAll(Question.defaultLayer, CrossSpawnSpawner.defaultLayer))
 
 const askEffect = Effect.fn("QuestionTest.ask")(function* (input: {
   sessionID: SessionID
@@ -332,6 +331,40 @@ it.instance(
       yield* rejectAll
       expect((yield* Fiber.await(fiber1))._tag).toBe("Failure")
       expect((yield* Fiber.await(fiber2))._tag).toBe("Failure")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - hoists nested session questions to the root session",
+  () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const root = yield* sessions.create({ title: "root" })
+      const child = yield* sessions.create({
+        title: "child",
+        parentID: root.id,
+      })
+      const grandchild = yield* sessions.create({
+        title: "grandchild",
+        parentID: child.id,
+      })
+
+      const fiber = yield* askEffect({
+        sessionID: grandchild.id,
+        questions: [
+          {
+            question: "Choose",
+            header: "Choice",
+            options: [{ label: "A", description: "Option A" }],
+          },
+        ],
+      }).pipe(Effect.forkScoped)
+
+      const pending = yield* waitForPending(1)
+      expect(pending[0].sessionID).toBe(root.id)
+      yield* rejectAll
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
     }),
   { git: true },
 )
