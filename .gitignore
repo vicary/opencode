@@ -30,3 +30,7 @@ UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# Generated build artifacts
+packages/opencode/src/provider/models-snapshot.js
+packages/opencode/src/provider/models-snapshot.d.ts
