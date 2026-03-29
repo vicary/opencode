@@ -1657,7 +1657,7 @@ export default function Page() {
     <SessionComposerRegion
       state={composer}
       ready={!store.deferRender && messagesReady()}
-      centered={placement === "dock" && centered()}
+      centered={false}
       placement={placement}
       inputRef={(el) => {
         inputRef = el
@@ -1781,7 +1781,7 @@ export default function Page() {
                     shouldAnchorBottom={() =>
                       !location.hash && !store.messageId && !ui.pendingMessage && !autoScroll.userScrolled()
                     }
-                    centered={centered()}
+                    centered={false}
                     setContentRef={(el) => {
                       content = el
                       autoScroll.contentRef(el)
