@@ -1855,7 +1855,7 @@ export default function Page() {
                     onUserScroll={markUserScroll}
                     onTurnBackfillScroll={historyWindow.onScrollerScroll}
                     onAutoScrollInteraction={autoScroll.handleInteraction}
-                    centered={centered()}
+                    centered={false}
                     setContentRef={(el) => {
                       content = el
                       autoScroll.contentRef(el)
@@ -1883,7 +1883,7 @@ export default function Page() {
           <SessionComposerRegion
             state={composer}
             ready={!store.deferRender && messagesReady()}
-            centered={centered()}
+            centered={false}
             inputRef={(el) => {
               inputRef = el
             }}
