@@ -3,8 +3,10 @@
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
-- Production CLI build for local update testing: run `OPENCODE_CHANNEL=latest bun run build --single` from `packages/opencode`; this should produce the next patch preview for the rebased release (for example `1.3.4-preview.<stamp>` when rebased onto `v1.3.3`).
-- After a production-flavored local build, double check `~/.opencode/bin/opencode --version` reports the expected custom version based on the rebased release and `~/.opencode/bin/opencode --print-logs stats` logs `service=db path=.../opencode.db opening database` rather than a channel-specific DB like `opencode-fix-vicary.db`.
+- Local rebased CLI builds in this fork MUST use the preview version protocol.
+- Build from `packages/opencode` with `OPENCODE_CHANNEL=latest bun run build --single`, and override version inputs when needed so the installed binary reports the next patch preview version for the rebased upstream tag, for example `1.3.4-preview.<stamp>` when rebased onto `v1.3.3`.
+- Treat any plain patch version like `1.3.8` as incorrect for this workflow.
+- After the build, verify `~/.opencode/bin/opencode --version` reports the expected preview version and `~/.opencode/bin/opencode --print-logs stats` logs `service=db path=.../opencode.db opening database` rather than a channel-specific DB path.
 - If the local `PATH` does not include `~/.opencode/bin`, `opencode` may resolve to a Homebrew-installed binary instead. Add `~/.opencode/bin` to shell env vars first (for example in `~/.zshrc`) before relying on plain `opencode` checks.
 
 ## Style Guide
