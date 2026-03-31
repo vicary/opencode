@@ -52,6 +52,7 @@ import {
   shouldFocusTerminalOnKeyDown,
 } from "@/pages/session/helpers"
 import { MessageTimeline } from "@/pages/session/message-timeline"
+import { shouldRefresh } from "@/pages/session/todo-refresh"
 import { type DiffStyle, SessionReviewTab, type SessionReviewTabProps } from "@/pages/session/review-tab"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { syncSessionModel } from "@/pages/session/session-model-helpers"
@@ -662,17 +663,26 @@ export default function Page() {
         return [
           sdk.directory,
           id,
-          id ? (sync.data.session_status[id]?.type ?? "idle") : "idle",
+          id ? (sync.data.session_status[id]?.type ?? "idle") !== "idle" : false,
           id ? composer.blocked() : false,
         ] as const
       },
-      ([dir, id, status, blocked]) => {
+      ([dir, id, active, blocked], prev) => {
         if (todoFrame !== undefined) cancelAnimationFrame(todoFrame)
         if (todoTimer !== undefined) window.clearTimeout(todoTimer)
         todoFrame = undefined
         todoTimer = undefined
         if (!id) return
-        if (status === "idle" && !blocked) return
+        if (
+          !shouldRefresh(
+            { active, blocked },
+            prev && prev[0] === dir && prev[1] === id
+              ? { active: prev[2], blocked: prev[3] }
+              : undefined,
+          )
+        ) {
+          return
+        }
         const cached = untrack(() => sync.data.todo[id] !== undefined || globalSync.data.session_todo[id] !== undefined)
 
         todoFrame = requestAnimationFrame(() => {
