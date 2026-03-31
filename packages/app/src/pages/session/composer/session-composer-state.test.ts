@@ -1,7 +1,19 @@
-import { describe, expect, test } from "bun:test"
-import type { PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
-import { todoState } from "./session-composer-state"
+import { describe, expect, mock, test } from "bun:test"
+import type { PermissionRequest, QuestionRequest, Session, Todo } from "@opencode-ai/sdk/v2/client"
 import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
+
+const solid = (await import("solid-js/dist/solid.cjs" as string)) as typeof import("solid-js")
+
+mock.module("solid-js", () => solid)
+mock.module("@solidjs/router", () => ({
+  useParams: () => ({}),
+}))
+
+const mod = (await import("./session-composer-state?client-test" as string)) as typeof import("./session-composer-state")
+const createDock = mod.createDock
+const todoState = mod.todoState
+const createRoot = solid.createRoot
+const createSignal = solid.createSignal
 
 const session = (input: { id: string; parentID?: string }) =>
   ({
@@ -21,6 +33,8 @@ const question = (id: string, sessionID: string) =>
     sessionID,
     questions: [],
   }) as QuestionRequest
+
+const todo = (status: Todo["status"]): Todo => ({ status } as Todo)
 
 describe("sessionPermissionRequest", () => {
   test("prefers the current session permission", () => {
@@ -124,5 +138,56 @@ describe("todoState", () => {
 
   test("clears completed todos when the session is no longer live", () => {
     expect(todoState({ count: 2, done: true, live: false })).toBe("clear")
+  })
+})
+
+describe("createDock", () => {
+  test("status-only updates do not dirty todo-focused memo state", () => {
+    createRoot((dispose: () => void) => {
+      const [todos] = createSignal<Todo[]>([todo("pending")])
+      const [active, setActive] = createSignal(false)
+      const [blocked] = createSignal(false)
+
+      const dock = createDock({
+        todos,
+        active,
+        blocked,
+        closeMs: () => 0,
+        clear: () => {},
+      })
+
+      const first = dock.todo()
+
+      expect(first.count).toBe(1)
+      expect(first.done).toBe(false)
+
+      setActive(true)
+
+      expect(dock.todo()).toBe(first)
+      expect(dock.todo().count).toBe(1)
+      expect(dock.todo().done).toBe(false)
+
+      dispose()
+    })
+  })
+
+  test("status-driven state remains available through the streaming branch", () => {
+    createRoot((dispose: () => void) => {
+      const [todos] = createSignal<Todo[]>([todo("pending")])
+      const [active] = createSignal(true)
+      const [blocked] = createSignal(false)
+
+      const dock = createDock({
+        todos,
+        active,
+        blocked,
+        closeMs: () => 0,
+        clear: () => {},
+      })
+
+      expect(dock.live()).toBe(true)
+
+      dispose()
+    })
   })
 })
