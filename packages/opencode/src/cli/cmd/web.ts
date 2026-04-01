@@ -4,7 +4,6 @@ import { UI } from "../ui"
 import { effectCmd } from "../effect-cmd"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import open from "open"
 import { networkInterfaces } from "os"
 
 function getNetworkIPs() {
@@ -32,7 +31,7 @@ function getNetworkIPs() {
 export const WebCommand = effectCmd({
   command: "web",
   builder: (yargs) => withNetworkOptions(yargs),
-  describe: "start opencode server and open web interface",
+  describe: "start opencode server for the web interface",
   // Server loads instances per-request via x-opencode-directory header — no
   // ambient project InstanceContext needed at startup.
   instance: false,
@@ -71,12 +70,9 @@ export const WebCommand = effectCmd({
         )
       }
 
-      // Open localhost in browser
-      open(localhostUrl).catch(() => {})
     } else {
       const displayUrl = server.url.toString()
       UI.println(UI.Style.TEXT_INFO_BOLD + "  Web interface:    ", UI.Style.TEXT_NORMAL, displayUrl)
-      open(displayUrl).catch(() => {})
     }
 
     yield* Effect.never
