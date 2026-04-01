@@ -14,6 +14,16 @@ import { useLanguage } from "@/context/language"
 const doneToken = "\u0000done\u0000"
 const totalToken = "\u0000total\u0000"
 
+export const shouldEnsureTodo = (input: {
+  prev?: { open: boolean; inProgress: number }
+  next: { open: boolean; inProgress: number }
+}) => {
+  if (!input.next.open || input.next.inProgress < 0) return false
+  if (!input.prev) return true
+  if (!input.prev.open && input.next.open) return true
+  return input.prev.inProgress !== input.next.inProgress
+}
+
 function dot(status: Todo["status"]) {
   if (status !== "in_progress") return undefined
   return (
