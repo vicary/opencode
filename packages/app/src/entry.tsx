@@ -8,6 +8,7 @@ import { dict as en } from "@/i18n/en"
 import { dict as zh } from "@/i18n/zh"
 import { handleNotificationClick } from "@/utils/notification-click"
 import { authFromToken } from "@/utils/server"
+import { resolvePlatformVersion } from "@/utils/platform-version"
 import pkg from "../package.json"
 import { ServerConnection } from "./context/server"
 
@@ -118,10 +119,11 @@ const clearAuthToken = () => {
   params.delete("auth_token")
   history.replaceState(null, "", location.pathname + (params.size ? `?${params}` : "") + location.hash)
 }
+const version = resolvePlatformVersion(pkg.version, import.meta.env.VITE_OPENCODE_VERSION)
 
 const platform: Platform = {
   platform: "web",
-  version: pkg.version,
+  version,
   openLink,
   back,
   forward,
