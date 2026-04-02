@@ -1,13 +1,15 @@
-import { expect, mock, beforeEach } from "bun:test"
+import { test, expect, mock, beforeEach, afterEach } from "bun:test"
 import { EventEmitter } from "events"
 import { Deferred, Effect, Layer, Option } from "effect"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
+import type { InstanceContext } from "../../src/project/instance-context"
 
 // Track open() calls and control failure behavior
 let openShouldFail = false
 let openCalledWith: string | undefined
 let openDeferred: Deferred.Deferred<string> | undefined
+const streamables: Array<{ closed: number }> = []
 
 void mock.module("open", () => ({
   default: async (url: string) => {
@@ -45,10 +47,12 @@ const transportCalls: Array<{
 void mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
   StreamableHTTPClientTransport: class MockStreamableHTTP {
     url: string
+    closed = 0
     authProvider: { redirectToAuthorization?: (url: URL) => Promise<void> } | undefined
     constructor(url: URL, options?: { authProvider?: { redirectToAuthorization?: (url: URL) => Promise<void> } }) {
       this.url = url.toString()
       this.authProvider = options?.authProvider
+      streamables.push(this)
       transportCalls.push({
         type: "streamable",
         url: url.toString(),
@@ -64,6 +68,9 @@ void mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
     }
     async finishAuth(_code: string) {
       // Mock successful auth completion
+    }
+    async close() {
+      this.closed += 1
     }
   },
 }))
@@ -102,16 +109,21 @@ beforeEach(() => {
   openCalledWith = undefined
   openDeferred = undefined
   transportCalls.length = 0
+  streamables.length = 0
 })
 
 // Import modules after mocking
 const { MCP } = await import("../../src/mcp/index")
+const { AppRuntime } = await import("../../src/effect/app-runtime")
 const { Bus } = await import("../../src/bus")
 const { Config } = await import("../../src/config/config")
+const { InstanceRef } = await import("../../src/effect/instance-ref")
 const { McpAuth } = await import("../../src/mcp/auth")
 const { McpOAuthCallback } = await import("../../src/mcp/oauth-callback")
+const { InstanceRuntime } = await import("../../src/project/instance-runtime")
 const { AppFileSystem } = await import("@opencode-ai/core/filesystem")
 const { CrossSpawnSpawner } = await import("@opencode-ai/core/cross-spawn-spawner")
+const { disposeAllInstances, provideTestInstance, tmpdir, withTestInstance } = await import("../fixture/fixture")
 const mcpTest = testEffect(
   MCP.layer.pipe(
     Layer.provide(McpAuth.defaultLayer),
@@ -122,6 +134,21 @@ const mcpTest = testEffect(
   ),
 )
 const service = MCP.Service as unknown as Effect.Effect<MCPNS.Interface, never, never>
+const runInInstance = <A, E, R>(ctx: InstanceContext, effect: Effect.Effect<A, E, R>) =>
+  AppRuntime.runPromise(effect.pipe(Effect.provideService(InstanceRef, ctx)))
+const authenticate = (ctx: InstanceContext, name: string) => runInInstance(ctx, Effect.gen(function* () {
+  const mcp = yield* service
+  return yield* mcp.authenticate(name)
+}))
+const removeAuth = (ctx: InstanceContext, name: string) => runInInstance(ctx, Effect.gen(function* () {
+  const mcp = yield* service
+  return yield* mcp.removeAuth(name)
+}))
+
+afterEach(async () => {
+  await McpOAuthCallback.stop().catch(() => undefined)
+  await disposeAllInstances()
+})
 
 const config = (name: string) => ({
   mcp: {
@@ -224,3 +251,189 @@ mcpTest.instance(
     }),
   { config: config("test-oauth-server-3") },
 )
+
+test("pending OAuth transport replacement closes old transport", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        `${dir}/opencode.json`,
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          mcp: {
+            replace: {
+              type: "remote",
+              url: "https://example.com/mcp",
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  await provideTestInstance({
+    directory: tmp.path,
+    fn: async (ctx) => {
+      const a = authenticate(ctx, "replace").catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      expect(streamables).toHaveLength(2)
+
+      const first = streamables.at(-1)!
+      const b = authenticate(ctx, "replace").catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+
+      expect(streamables).toHaveLength(3)
+      expect(first.closed).toBe(1)
+      expect(streamables.at(-1)?.closed).toBe(0)
+
+      await removeAuth(ctx, "replace")
+      expect(streamables.at(-1)?.closed).toBe(1)
+      await McpOAuthCallback.stop()
+      await Promise.all([a, b])
+    },
+  })
+})
+
+test("removeAuth closes pending OAuth transport before deleting it", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        `${dir}/opencode.json`,
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          mcp: {
+            remove: {
+              type: "remote",
+              url: "https://example.com/mcp",
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  await provideTestInstance({
+    directory: tmp.path,
+    fn: async (ctx) => {
+      const auth = authenticate(ctx, "remove").catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+
+      expect(streamables).toHaveLength(2)
+      expect(streamables.at(-1)?.closed).toBe(0)
+
+      await removeAuth(ctx, "remove")
+      expect(streamables.at(-1)?.closed).toBe(1)
+
+      await McpOAuthCallback.stop()
+      await auth
+    },
+  })
+})
+
+test("instance cleanup closes pending OAuth transports", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        `${dir}/opencode.json`,
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          mcp: {
+            finalizer: {
+              type: "remote",
+              url: "https://example.com/mcp",
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  await withTestInstance({
+    directory: tmp.path,
+    fn: async (ctx) => {
+      const auth = authenticate(ctx, "finalizer").catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+
+      expect(streamables).toHaveLength(2)
+      expect(streamables.at(-1)?.closed).toBe(0)
+
+      await McpOAuthCallback.stop()
+      await auth
+      await InstanceRuntime.disposeInstance(ctx)
+      expect(streamables.at(-1)?.closed).toBe(1)
+    },
+  })
+})
+
+test("instance cleanup does not clear another instance pending transport", async () => {
+  await using a = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        `${dir}/opencode.json`,
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          mcp: {
+            keep: {
+              type: "remote",
+              url: "https://example.com/mcp",
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  await using b = await tmpdir({
+    init: async (dir) => {
+      await Bun.write(
+        `${dir}/opencode.json`,
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          mcp: {
+            drop: {
+              type: "remote",
+              url: "https://example.com/mcp",
+            },
+          },
+        }),
+      )
+    },
+  })
+
+  let keep: { closed: number } | undefined
+  let drop: { closed: number } | undefined
+  let keepCtx: InstanceContext | undefined
+
+  await withTestInstance({
+    directory: a.path,
+    fn: async (ctx) => {
+      keepCtx = ctx
+      const auth = authenticate(ctx, "keep").catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      keep = streamables.at(-1)
+      await McpOAuthCallback.stop()
+      await auth
+    },
+  })
+
+  await withTestInstance({
+    directory: b.path,
+    fn: async (ctx) => {
+      const auth = authenticate(ctx, "drop").catch(() => undefined)
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      drop = streamables.at(-1)
+      expect(keep?.closed).toBe(0)
+      expect(drop?.closed).toBe(0)
+      await McpOAuthCallback.stop()
+      await auth
+      await InstanceRuntime.disposeInstance(ctx)
+      expect(drop?.closed).toBe(1)
+      expect(keep?.closed).toBe(0)
+    },
+  })
+
+  expect(keepCtx).toBeDefined()
+  expect(keep?.closed).toBe(0)
+  await removeAuth(keepCtx!, "keep")
+  expect(keep?.closed).toBe(1)
+  await InstanceRuntime.disposeInstance(keepCtx!)
+})
