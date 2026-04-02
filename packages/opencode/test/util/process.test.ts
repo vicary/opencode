@@ -8,6 +8,73 @@ function node(script: string) {
   return [process.execPath, "-e", script]
 }
 
+const wrapper = path.join(import.meta.dir, "../fixture/process-wrapper.js")
+
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function wait(file: string, timeout = 3_000) {
+  const stop = Date.now() + timeout
+  while (Date.now() < stop) {
+    const text = await fs.readFile(file, "utf8").catch(() => "")
+    const pid = Number(text.trim())
+    if (pid > 0) return pid
+    await Bun.sleep(20)
+  }
+
+  throw new Error(`Timed out waiting for pid file: ${file}`)
+}
+
+async function gone(pid: number, timeout = 3_000) {
+  const stop = Date.now() + timeout
+  while (Date.now() < stop) {
+    if (!alive(pid)) return
+    await Bun.sleep(20)
+  }
+
+  throw new Error(`Timed out waiting for process exit: ${pid}`)
+}
+
+async function waitMany(file: string, count: number, timeout = 3_000) {
+  const stop = Date.now() + timeout
+  while (Date.now() < stop) {
+    const text = await fs.readFile(file, "utf8").catch(() => "")
+    const pids = text
+      .trim()
+      .split(/\s+/)
+      .map((x) => Number(x))
+      .filter((x) => x > 0)
+    if (pids.length >= count) return pids
+    await Bun.sleep(20)
+  }
+
+  throw new Error(`Timed out waiting for pid file: ${file}`)
+}
+
+async function wrap(file: string, mode: string) {
+  const proc = Process.spawn([process.execPath, wrapper, file, mode], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+  })
+
+  return {
+    proc,
+    stop: async (...pids: number[]) => {
+      await Process.stop(proc).catch(() => undefined)
+      for (const pid of pids) {
+        if (alive(pid)) process.kill(pid, "SIGKILL")
+      }
+    },
+  }
+}
+
 describe("util.process", () => {
   test("captures stdout and stderr", async () => {
     const out = await Process.run(node('process.stdout.write("out");process.stderr.write("err")'))
@@ -125,4 +192,60 @@ describe("util.process", () => {
       code: "ENOENT",
     })
   })
+
+  test("stops descendant processes on non-Windows", async () => {
+    if (process.platform === "win32") return
+
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "child.pid")
+    const run = await wrap(file, "single")
+
+    const pid = await wait(file)
+
+    try {
+      expect(alive(pid)).toBe(true)
+      await Process.stop(run.proc)
+      await run.proc.exited.catch(() => undefined)
+      await gone(pid)
+    } finally {
+      await run.stop(pid)
+    }
+  }, 10_000)
+
+  test("stopPid kills descendants without a ChildProcess handle", async () => {
+    if (process.platform === "win32") return
+
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "child.pid")
+    const run = await wrap(file, "single")
+
+    const pid = await wait(file)
+
+    try {
+      expect(alive(pid)).toBe(true)
+      await Process.stopPid(run.proc.pid!)
+      await gone(pid)
+    } finally {
+      await run.stop(pid)
+    }
+  }, 10_000)
+
+  test("stopPid continues after one child exits before kill", async () => {
+    if (process.platform === "win32") return
+
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "children.pid")
+    const run = await wrap(file, "race")
+
+    const [slow, fast] = await waitMany(file, 2)
+
+    try {
+      expect(alive(slow)).toBe(true)
+      await Process.stopPid(run.proc.pid!)
+      await gone(fast)
+      await gone(slow)
+    } finally {
+      await run.stop(fast, slow)
+    }
+  }, 10_000)
 })

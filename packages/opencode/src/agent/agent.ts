@@ -168,6 +168,7 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
+                question: "allow",
                 todowrite: "deny",
               }),
               user,

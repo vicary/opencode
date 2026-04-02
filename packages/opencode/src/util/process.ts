@@ -3,6 +3,14 @@ import launch from "cross-spawn"
 import { buffer } from "node:stream/consumers"
 import { errorMessage } from "./error"
 
+const STOP_TIMEOUT_MS = 200
+
+function kill(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(pid, signal)
+  } catch {}
+}
+
 export type Stdio = "inherit" | "pipe" | "ignore"
 export type Shell = boolean | string
 
@@ -148,17 +156,48 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<Result>
 export async function stop(proc: ChildProcess) {
   if (proc.exitCode !== null || proc.signalCode !== null) return
 
-  if (process.platform !== "win32" || !proc.pid) {
+  if (!proc.pid) {
     proc.kill()
     return
   }
 
-  const out = await run(["taskkill", "/pid", String(proc.pid), "/T", "/F"], {
-    nothrow: true,
-  })
+  return stopPid(proc.pid, proc)
+}
 
-  if (out.code === 0) return
-  proc.kill()
+export async function stopPid(pid: number, proc?: ChildProcess) {
+  if (process.platform === "win32") {
+    const out = await run(["taskkill", "/pid", String(pid), "/T", "/F"], {
+      nothrow: true,
+    })
+
+    if (out.code === 0) return
+    proc?.kill()
+    return
+  }
+
+  const pids: number[] = []
+  const queue = [pid]
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) continue
+    const out = await text(["pgrep", "-P", String(current)], { nothrow: true })
+    for (const tok of out.text.split(/\r?\n/)) {
+      const child = Number.parseInt(tok, 10)
+      if (Number.isNaN(child) || pids.includes(child)) continue
+      pids.push(child)
+      queue.push(child)
+    }
+  }
+
+  for (const child of pids.toReversed()) {
+    kill(child, "SIGTERM")
+  }
+  kill(pid, "SIGTERM")
+  await Bun.sleep(STOP_TIMEOUT_MS)
+  for (const child of pids.toReversed()) {
+    kill(child, "SIGKILL")
+  }
+  kill(pid, "SIGKILL")
 }
 
 export async function text(cmd: string[], opts: RunOptions = {}): Promise<TextResult> {
