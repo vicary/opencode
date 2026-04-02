@@ -165,6 +165,42 @@ describe("tool.task", () => {
             mode: "subagent",
           },
         },
+        },
+      ),
+  )
+
+  it.live("general agent exposes question tool for subagent clarification", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const agents = yield* Agent.Service
+        const registry = yield* ToolRegistry.Service
+        const general = yield* agents.get("general")
+        const tools = yield* registry.tools({ ...ref, agent: general })
+
+        expect(tools.some((tool) => tool.id === "question")).toBe(true)
+      }),
+    ),
+  )
+
+  it.live("custom subagents expose question tool by default", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const agents = yield* Agent.Service
+          const registry = yield* ToolRegistry.Service
+          const hydralisk = yield* agents.get("hydralisk")
+          const tools = yield* registry.tools({ ...ref, agent: hydralisk })
+
+          expect(tools.some((tool) => tool.id === "question")).toBe(true)
+        }),
+      {
+        config: {
+          agent: {
+            hydralisk: {
+              mode: "subagent",
+            },
+          },
+        },
       },
     },
   )

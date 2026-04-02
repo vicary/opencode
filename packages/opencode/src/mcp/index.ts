@@ -17,6 +17,7 @@ import { ConfigMCP } from "../config/mcp"
 import * as Log from "@opencode-ai/core/util/log"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import * as Process from "../util/process"
 import { withTimeout } from "@/util/timeout"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { McpOAuthProvider, OAUTH_CALLBACK_PATH } from "./oauth-provider"
@@ -26,10 +27,9 @@ import { BusEvent } from "../bus/bus-event"
 import { Bus } from "@/bus"
 import { TuiEvent } from "@/cli/cmd/tui/event"
 import open from "open"
-import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
+import { Effect, Exit, Layer, Option, Context, Schema } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
 const log = Log.create({ service: "mcp" })
@@ -275,7 +275,6 @@ export const use = serviceUse(Service)
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const bus = yield* Bus.Service
 
@@ -497,30 +496,6 @@ export const layer = Layer.effect(
     })
     const cfgSvc = yield* Config.Service
 
-    const descendants = Effect.fnUntraced(
-      function* (pid: number) {
-        if (process.platform === "win32") return [] as number[]
-        const pids: number[] = []
-        const queue = [pid]
-        while (queue.length > 0) {
-          const current = queue.shift()!
-          const handle = yield* spawner.spawn(ChildProcess.make("pgrep", ["-P", String(current)], { stdin: "ignore" }))
-          const text = yield* Stream.mkString(Stream.decodeText(handle.stdout))
-          yield* handle.exitCode
-          for (const tok of text.split("\n")) {
-            const cpid = parseInt(tok, 10)
-            if (!isNaN(cpid) && !pids.includes(cpid)) {
-              pids.push(cpid)
-              queue.push(cpid)
-            }
-          }
-        }
-        return pids
-      },
-      Effect.scoped,
-      Effect.catch(() => Effect.succeed([] as number[])),
-    )
-
     function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
         log.info("tools list changed notification received", { server: name })
@@ -582,12 +557,7 @@ export const layer = Layer.effect(
                 Effect.gen(function* () {
                   const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
                   if (typeof pid === "number") {
-                    const pids = yield* descendants(pid)
-                    for (const dpid of pids) {
-                      try {
-                        process.kill(dpid, "SIGTERM")
-                      } catch {}
-                    }
+                    yield* Effect.tryPromise(() => Process.stopPid(pid)).pipe(Effect.ignore)
                   }
                   yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
                 }),
