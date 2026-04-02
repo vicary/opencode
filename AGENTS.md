@@ -3,10 +3,13 @@
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
-- Local rebased CLI builds in this fork MUST use the preview version protocol.
-- Build from `packages/opencode` with `OPENCODE_CHANNEL=latest bun run build --single`, and override version inputs when needed so the installed binary reports the next patch preview version for the rebased upstream tag, for example `1.3.4-preview.<stamp>` when rebased onto `v1.3.3`.
-- Treat any plain patch version like `1.3.8` as incorrect for this workflow.
-- After the build, verify `~/.opencode/bin/opencode --version` reports the expected preview version and `~/.opencode/bin/opencode --print-logs stats` logs `service=db path=.../opencode.db opening database` rather than a channel-specific DB path.
+- Preview Build Protocol (prominent): rebased local CLI builds in this fork MUST keep the preview version and the shared DB channel aligned.
+- Build from `packages/opencode` with `OPENCODE_CHANNEL=latest bun run build --single`. If you need to override the version, keep `OPENCODE_CHANNEL=latest` and set `OPENCODE_VERSION` to the next patch preview for the rebased upstream tag, for example `1.3.4-preview.<stamp>` when rebased onto `v1.3.3`.
+- On branch `fix/vicary`, do not skip embedded web UI generation. `--skip-embed-web-ui` is not allowed for rebuilds on this branch.
+- Plain patch versions such as `1.3.8` are incorrect for this workflow.
+- Post-build, verify both with the installed binary:
+  - `~/.opencode/bin/opencode --version` must report the expected `-preview` version.
+  - `~/.opencode/bin/opencode --print-logs stats` must log `service=db path=.../opencode.db opening database`, not a channel-specific path such as `opencode-<channel>.db`.
 - If the local `PATH` does not include `~/.opencode/bin`, `opencode` may resolve to a Homebrew-installed binary instead. Add `~/.opencode/bin` to shell env vars first (for example in `~/.zshrc`) before relying on plain `opencode` checks.
 
 ## Style Guide

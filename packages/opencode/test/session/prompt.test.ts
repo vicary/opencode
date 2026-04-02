@@ -48,7 +48,7 @@ import * as Database from "../../src/storage/db"
 import { Ripgrep } from "../../src/file/ripgrep"
 import { Format } from "../../src/format"
 import { Reference } from "../../src/reference/reference"
-import { TestInstance } from "../fixture/fixture"
+import { provideTmpdirInstance, provideTmpdirServer, TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, pollWithTimeout, testEffect } from "../lib/effect"
 import { reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
@@ -1749,7 +1749,82 @@ unix(
         yield* prompt.cancel(chat.id)
         yield* Fiber.await(a)
       }),
+unix(
+  "later user turn finalizes prior interrupted tool-call turn so loading clears",
+  () =>
+    provideTmpdirServer(
+      Effect.fnUntraced(function* ({ llm }) {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Interrupted session recovery",
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        })
+        const initialUser = yield* user(chat.id, "run bash")
+        const dangling: MessageV2.Assistant = {
+          id: MessageID.ascending(),
+          role: "assistant",
+          parentID: initialUser.id,
+          sessionID: chat.id,
+          mode: "build",
+          agent: "build",
+          cost: 0,
+          path: { cwd: "/tmp", root: "/tmp" },
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: ref.modelID,
+          providerID: ref.providerID,
+          time: { created: Date.now() },
+        }
+        yield* sessions.updateMessage(dangling)
+        yield* sessions.updatePart({
+          id: PartID.ascending(),
+          messageID: dangling.id,
+          sessionID: chat.id,
+          type: "tool",
+          callID: "call-dangling-bash",
+          tool: "bash",
+          state: {
+            status: "running",
+            input: { command: "sleep 30" },
+            time: { start: Date.now() },
+            metadata: { output: "partial output" },
+          },
+        })
+
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "continue" }],
+        })
+
+        yield* llm.text("done")
+        const second = yield* prompt.loop({ sessionID: chat.id })
+        expect(second.info.role).toBe("assistant")
+        if (second.info.role !== "assistant") throw new Error("expected assistant response")
+        expect(second.info.finish).toBe("stop")
+
+        const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
+        const assistants = msgs.filter((msg) => msg.info.role === "assistant")
+        expect(assistants).toHaveLength(2)
+
+        const repaired = assistants.find((msg) => msg.info.id === dangling.id)
+        if (!repaired || repaired.info.role !== "assistant") throw new Error("expected repaired assistant")
+        expect(repaired.info.time.completed).toEqual(expect.any(Number))
+        expect(repaired.info.finish).toBe("tool-calls")
+        expect(repaired.parts.some((part) => part.type === "tool" && part.state.status === "error")).toBe(true)
+
+        const repairedTool = repaired.parts.find(
+          (part): part is ErrorToolPart => part.type === "tool" && part.state.status === "error",
+        )
+        expect(repairedTool?.state.error).toBe("Tool execution aborted")
+        expect(repairedTool?.state.metadata?.interrupted).toBe(true)
+        expect(repairedTool?.state.metadata?.output).toBe("partial output")
+      }),
+      { git: true, config: providerCfg },
     ),
+  30_000,
+)
   { git: true, config: cfg },
   30_000,
 )

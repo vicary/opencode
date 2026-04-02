@@ -1640,6 +1640,39 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       throw new Error("Impossible")
     })
 
+    const normalizeDanglingToolTurns = Effect.fn("SessionPrompt.normalizeDanglingToolTurns")(function* (
+      sessionID: SessionID,
+      msgs: MessageV2.WithParts[],
+    ) {
+      const latestUser = msgs.findLast((msg): msg is MessageV2.WithParts & { info: MessageV2.User } => msg.info.role === "user")
+      if (!latestUser) return false
+
+      let changed = false
+      for (const msg of msgs) {
+        if (msg.info.role !== "assistant") continue
+        if (msg.info.time.completed) continue
+        if (msg.info.id >= latestUser.info.id) continue
+
+        const interrupted = msg.parts.filter(
+          (part): part is MessageV2.ToolPart =>
+            part.type === "tool" && (part.state.status === "pending" || part.state.status === "running"),
+        )
+        if (interrupted.length === 0) continue
+
+        yield* processor.repairDanglingToolCalls({
+          assistantMessage: {
+            ...msg.info,
+            finish: msg.info.finish ?? "tool-calls",
+            time: { ...msg.info.time },
+          },
+          parts: interrupted,
+        })
+        changed = true
+      }
+
+      return changed
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1653,6 +1686,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           yield* slog.info("loop", { step })
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+          if (yield* normalizeDanglingToolTurns(sessionID, msgs)) {
+            msgs = yield* MessageV2.filterCompactedEffect(sessionID)
+          }
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
 

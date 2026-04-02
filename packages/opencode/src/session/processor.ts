@@ -62,6 +62,10 @@ type Input = {
 
 export interface Interface {
   readonly create: (input: Input) => Effect.Effect<Handle>
+  readonly repairDanglingToolCalls: (input: {
+    assistantMessage: MessageV2.Assistant
+    parts: ReadonlyArray<MessageV2.ToolPart>
+  }) => Effect.Effect<void>
 }
 
 type ToolCall = {
@@ -103,23 +107,42 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
 
-    const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
-      // Pre-capture snapshot before the LLM stream starts. The AI SDK
-      // may execute tools internally before emitting start-step events,
-      // so capturing inside the event handler can be too late.
-      const initialSnapshot = yield* snapshot.track()
+    const interruptedToolPart = (part: MessageV2.ToolPart, end: number) => {
+      const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
+      return {
+        ...part,
+        state: {
+          status: "error",
+          input: part.state.input,
+          error: "Tool execution aborted",
+          metadata: { ...metadata, interrupted: true },
+          time: { start: "time" in part.state ? part.state.time.start : end, end },
+        },
+      } satisfies MessageV2.ToolPart
+    }
+
+    const createContext = Effect.fn("SessionProcessor.createContext")(function* (input: Input) {
+      const snapshotID = yield* snapshot.track()
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
         model: input.model,
         toolcalls: {},
         shouldBreak: false,
-        snapshot: initialSnapshot,
+        snapshot: snapshotID,
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
       }
+      return ctx
+    })
+
+    const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
+      // Pre-capture snapshot before the LLM stream starts. The AI SDK
+      // may execute tools internally before emitting start-step events,
+      // so capturing inside the event handler can be too late.
+      const ctx = yield* createContext(input)
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
 
@@ -629,6 +652,17 @@ export const layer = Layer.effect(
         }
       })
 
+      const finalizeDanglingToolCalls = Effect.fn("SessionProcessor.finalizeDanglingToolCalls")(function* () {
+        for (const toolCallID of Object.keys(ctx.toolcalls)) {
+          const match = yield* readToolCall(toolCallID)
+          if (!match) continue
+          yield* session.updatePart(interruptedToolPart(match.part, Date.now()))
+        }
+        ctx.toolcalls = {}
+        ctx.assistantMessage.time.completed = Date.now()
+        yield* session.updateMessage(ctx.assistantMessage)
+      })
+
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
         if (ctx.snapshot) {
           const patch = yield* snapshot.patch(ctx.snapshot)
@@ -667,26 +701,7 @@ export const layer = Layer.effect(
           { concurrency: "unbounded" },
         )
 
-        for (const toolCallID of Object.keys(ctx.toolcalls)) {
-          const match = yield* readToolCall(toolCallID)
-          if (!match) continue
-          const part = match.part
-          const end = Date.now()
-          const metadata = "metadata" in part.state && isRecord(part.state.metadata) ? part.state.metadata : {}
-          yield* session.updatePart({
-            ...part,
-            state: {
-              ...part.state,
-              status: "error",
-              error: "Tool execution aborted",
-              metadata: { ...metadata, interrupted: true },
-              time: { start: "time" in part.state ? part.state.time.start : end, end },
-            },
-          })
-        }
-        ctx.toolcalls = {}
-        ctx.assistantMessage.time.completed = Date.now()
-        yield* session.updateMessage(ctx.assistantMessage)
+        yield* finalizeDanglingToolCalls()
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
@@ -798,7 +813,23 @@ export const layer = Layer.effect(
       } satisfies Handle
     })
 
-    return Service.of({ create })
+    const repairDanglingToolCalls = Effect.fn("SessionProcessor.repairDanglingToolCalls")(function* (input: {
+      assistantMessage: MessageV2.Assistant
+      parts: ReadonlyArray<MessageV2.ToolPart>
+    }) {
+      let changed = false
+      for (const part of input.parts) {
+        if (part.state.status !== "pending" && part.state.status !== "running") continue
+        changed = true
+        yield* session.updatePart(interruptedToolPart(part, Date.now()))
+      }
+
+      if (!changed) return
+      input.assistantMessage.time.completed = Date.now()
+      yield* session.updateMessage(input.assistantMessage)
+    })
+
+    return Service.of({ create, repairDanglingToolCalls })
   }),
 )
 
