@@ -1,4 +1,4 @@
-import { test, expect, describe, mock, afterEach, beforeEach } from "bun:test"
+import { test, expect, describe, mock, spyOn, afterEach, beforeEach } from "bun:test"
 import { Effect, Layer, Option } from "effect"
 import { NodeFileSystem, NodePath } from "@effect/platform-node"
 import { Config } from "@/config/config"
@@ -1107,6 +1107,88 @@ test("installs dependencies in writable OPENCODE_CONFIG_DIR", async () => {
     expect(await Filesystem.exists(path.join(tmp.extra, ".gitignore"))).toBe(true)
     expect(await Filesystem.readText(path.join(tmp.extra, ".gitignore"))).toContain("package-lock.json")
   } finally {
+    if (prev === undefined) delete process.env.OPENCODE_CONFIG_DIR
+    else process.env.OPENCODE_CONFIG_DIR = prev
+  }
+})
+
+test("plugin target keeps stable versions", () => {
+  expect(Config.pluginTarget({ version: "1.3.7", local: false, kind: "install" })).toBe("1.3.7")
+})
+
+test("plugin target maps preview version to previous stable patch", () => {
+  expect(Config.pluginTarget({ version: "1.3.8-preview.202604021601", local: false, kind: "install" })).toBe(
+    "1.3.7",
+  )
+})
+
+test("plugin target falls back to latest for malformed preview", () => {
+  expect(Config.pluginTarget({ version: "broken-preview", local: false, kind: "install" })).toBe("latest")
+})
+
+test("plugin target preserves local install and check split", () => {
+  expect(Config.pluginTarget({ version: "1.3.8-preview.202604021601", local: true, kind: "install" })).toBe("*")
+  expect(Config.pluginTarget({ version: "1.3.8-preview.202604021601", local: true, kind: "check" })).toBe(
+    "latest",
+  )
+})
+
+test("config installs resolved plugin target instead of raw version", async () => {
+  await using tmp = await tmpdir<string>({
+    init: async (dir) => {
+      const cfg = path.join(dir, "configdir")
+      await fs.mkdir(cfg, { recursive: true })
+      return cfg
+    },
+  })
+
+  const prev = process.env.OPENCODE_CONFIG_DIR
+  process.env.OPENCODE_CONFIG_DIR = tmp.extra
+
+  const installs: Array<{ dir: string; version: string | undefined }> = []
+  const npmMock = Layer.mock(Npm.Service)({
+    install: (dir, input) => {
+      installs.push({
+        dir,
+        version: input?.add.find((pkg) => pkg.name === "@opencode-ai/plugin")?.version,
+      })
+      return Effect.void
+    },
+    add: () => Effect.die("not implemented"),
+    outdated: () => Effect.succeed(false),
+    which: () => Effect.succeed(Option.none()),
+  })
+  const testLayer = Config.layer.pipe(
+    Layer.provide(testFlock),
+    Layer.provide(AppFileSystem.defaultLayer),
+    Layer.provide(Env.defaultLayer),
+    Layer.provide(emptyAuth),
+    Layer.provide(emptyAccount),
+    Layer.provideMerge(infra),
+    Layer.provide(npmMock),
+  )
+  const target = spyOn(Config, "currentPluginTarget").mockReturnValue("1.3.7")
+
+  try {
+    await provideTestInstance({
+      directory: tmp.path,
+      fn: async (ctx) => {
+        await Effect.runPromise(
+          Config.Service.use((svc) => provideCurrentInstance(svc.get(), ctx)).pipe(Effect.scoped, Effect.provide(testLayer)),
+        )
+        await Effect.runPromise(
+          Config.Service.use((svc) => provideCurrentInstance(svc.waitForDependencies(), ctx)).pipe(
+            Effect.scoped,
+            Effect.provide(testLayer),
+          ),
+        )
+      },
+    })
+
+    expect(installs.some((item) => item.dir === tmp.extra && item.version === "1.3.7")).toBe(true)
+    expect(target).toHaveBeenCalledWith("install")
+  } finally {
+    target.mockRestore()
     if (prev === undefined) delete process.env.OPENCODE_CONFIG_DIR
     else process.env.OPENCODE_CONFIG_DIR = prev
   }
