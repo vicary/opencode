@@ -43,6 +43,7 @@ import { ConfigSkills } from "./skills"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
+import semver from "semver"
 
 const log = Log.create({ service: "config" })
 
@@ -124,6 +125,28 @@ async function resolveLoadedPlugins<T extends { plugin?: ConfigPlugin.Spec[] }>(
   return config
 }
 
+export function pluginTarget(input: { version: string; local: boolean; kind: "install" | "check" }) {
+  if (input.local) return input.kind === "install" ? "*" : "latest"
+  if (semver.valid(input.version) && !input.version.includes("-preview.")) return input.version
+
+  const match = /^(\d+\.\d+\.\d+)-preview\./.exec(input.version)
+  if (!match) return "latest"
+
+  const parsed = semver.parse(match[1])
+  if (!parsed || parsed.patch < 1) return "latest"
+  return `${parsed.major}.${parsed.minor}.${parsed.patch - 1}`
+}
+
+export function currentPluginTarget(kind: "install" | "check") {
+  return pluginTarget({
+    version: InstallationVersion,
+    local: InstallationLocal,
+    kind,
+  })
+}
+
+export const Server = ConfigServer.Server.zod
+export const Layout = ConfigLayout.Layout.zod
 export type Layout = ConfigLayout.Layout
 
 const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate({
@@ -636,7 +659,7 @@ export const layer = Layer.effect(
               add: [
                 {
                   name: "@opencode-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
+                  version: currentPluginTarget("install"),
                 },
               ],
             })
