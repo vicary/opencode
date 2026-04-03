@@ -1,13 +1,13 @@
-import { Effect, Option, Schema, Scope, Stream } from "effect"
+import { Effect, Option, Schema, Stream } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as path from "path"
 import * as Tool from "./tool"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
-import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import { LSP } from "@/lsp/lsp"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { Reference } from "@/reference/reference"
 
@@ -43,7 +43,6 @@ export const ReadTool = Tool.define(
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
     const reference = yield* Reference.Service
-    const scope = yield* Scope.Scope
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
@@ -84,10 +83,6 @@ export const ReadTool = Tool.define(
         }),
         { concurrency: "unbounded" },
       ).pipe(Effect.map((items: string[]) => items.sort((a, b) => a.localeCompare(b))))
-    })
-
-    const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
-      yield* lsp.touchFile(filepath).pipe(Effect.ignore, Effect.forkIn(scope))
     })
 
     const readSample = Effect.fn("ReadTool.readSample")(function* (
@@ -313,8 +308,6 @@ export const ReadTool = Tool.define(
         output += `\n\n(End of file - total ${file.count} lines)`
       }
       output += "\n</content>"
-
-      yield* warm(filepath)
 
       if (loaded.length > 0) {
         output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`
