@@ -2,6 +2,8 @@ import { createStore, reconcile } from "solid-js/store"
 import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { useParams } from "@solidjs/router"
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Dialog } from "@opencode-ai/ui/dialog"
 import { useGlobalSDK } from "./global-sdk"
 import { useGlobalSync } from "./global-sync"
 import { usePlatform } from "@/context/platform"
@@ -13,6 +15,7 @@ import { decode64 } from "@/utils/base64"
 import { EventSessionError } from "@opencode-ai/sdk/v2"
 import { Persist, persisted } from "@/utils/persist"
 import { playSoundById } from "@/utils/sound"
+import { isPlugin, message } from "./notification-plugin"
 
 type NotificationBase = {
   directory?: string
@@ -114,6 +117,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const platform = usePlatform()
     const settings = useSettings()
     const language = useLanguage()
+    const dialog = useDialog()
 
     const empty: Notification[] = []
 
@@ -132,6 +136,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const [index, setIndex] = createStore<NotificationIndex>(buildNotificationIndex(store.list))
 
     const meta = { pruned: false, disposed: false }
+    const shown = new Map<string, number>()
 
     const updateUnseen = (scope: "session" | "project", key: string, unseen: Notification[]) => {
       setIndex(scope, "unseen", key, unseen)
@@ -267,6 +272,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
         }
 
         const error = "error" in event.properties ? event.properties.error : undefined
+        const msg = message(error)
         append({
           directory,
           time,
@@ -276,9 +282,21 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
           error,
         })
         const description =
-          session?.title ??
-          (typeof error === "string" ? error : language.t("notification.session.error.fallbackDescription"))
+          session?.title ?? msg ?? language.t("notification.session.error.fallbackDescription")
         const href = sessionID ? `/${base64Encode(directory)}/session/${sessionID}` : `/${base64Encode(directory)}`
+        if (msg && isPlugin(msg)) {
+          const last = shown.get(msg)
+          if (last === undefined || time - last >= 5000) {
+            shown.set(msg, time)
+            dialog.show(() => (
+              <Dialog title={language.t("notification.session.error.title")} fit>
+                <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
+                  <span class="text-14-regular text-text-strong">{msg}</span>
+                </div>
+              </Dialog>
+            ))
+          }
+        }
         if (settings.notifications.errors()) {
           void platform.notify(language.t("notification.session.error.title"), description, href)
         }
