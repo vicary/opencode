@@ -14,6 +14,15 @@ import { useLanguage } from "@/context/language"
 const doneToken = "\u0000done\u0000"
 const totalToken = "\u0000total\u0000"
 
+/**
+ * Returns true only when the todo list is fully invisible (hide ≥ 0.98) so
+ * that pointer-events are blocked only when the list is not interactable.
+ * Using hide > 0.1 was too aggressive and broke scrolling on mobile.
+ */
+export const shouldBlockPointer = (hide: number) => hide > 0.98
+
+export const shouldAllowDockPointer = (value: number) => value > 0.1
+
 export const shouldEnsureTodo = (input: {
   prev?: { open: boolean; inProgress: number }
   next: { open: boolean; inProgress: number }
@@ -192,7 +201,7 @@ export function SessionTodoDock(props: {
           data-slot="session-todo-list"
           aria-hidden={props.collapsed || off()}
           classList={{
-            "pointer-events-none": hide() > 0.1,
+            "pointer-events-none": shouldBlockPointer(hide()),
           }}
           style={{
             visibility: off() ? "hidden" : "visible",
