@@ -14,7 +14,7 @@ import { SessionQuestionDock } from "@/pages/session/composer/session-question-d
 import { SessionFollowupDock } from "@/pages/session/composer/session-followup-dock"
 import { SessionRevertDock } from "@/pages/session/composer/session-revert-dock"
 import type { SessionComposerState } from "@/pages/session/composer/session-composer-state"
-import { SessionTodoDock } from "@/pages/session/composer/session-todo-dock"
+import { SessionTodoDock, shouldAllowDockPointer } from "@/pages/session/composer/session-todo-dock"
 import type { FollowupDraft } from "@/components/prompt-input/submit"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 
@@ -200,7 +200,7 @@ export function SessionComposerRegion(props: {
               <div
                 classList={{
                   "overflow-hidden": true,
-                  "pointer-events-none": value() < 0.98,
+                  "pointer-events-none": !shouldAllowDockPointer(value()),
                 }}
                 style={{
                   "max-height": `${full() * value()}px`,
