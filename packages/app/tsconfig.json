@@ -21,6 +21,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "package.json"],
+  "include": ["src", "package.json", "vite.config.ts", "vite.js"],
   "exclude": ["dist", "ts-dist"]
 }
