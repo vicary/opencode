@@ -98,13 +98,12 @@ describe("shell", () => {
   }
 
   test("session shell cleanup awaits async cancel", async () => {
-    const src = await Bun.file(path.join(import.meta.dir, "../../src/session/prompt.ts")).text()
-    const start = src.indexOf("export async function shell")
-    const end = src.indexOf("export const CommandInput", start)
-    expect(start).toBeGreaterThan(-1)
-    expect(end).toBeGreaterThan(start)
-    const body = src.slice(start, end)
-    expect(body).toContain("await using _ = defer(async () =>")
-    expect(body).toContain("await cancel(input.sessionID)")
+    const prompt = await Bun.file(path.join(import.meta.dir, "../../src/session/prompt.ts")).text()
+    const runner = await Bun.file(path.join(import.meta.dir, "../../src/effect/runner.ts")).text()
+
+    expect(prompt).toContain("const ready = yield* Latch.make()")
+    expect(prompt).toContain("state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)")
+    expect(runner).toContain("yield* shell.ready.await.pipe(Effect.exit, Effect.asVoid)")
+    expect(runner).toContain("yield* Fiber.interrupt(shell.fiber)")
   })
 })

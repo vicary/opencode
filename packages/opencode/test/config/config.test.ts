@@ -1155,7 +1155,6 @@ test("config installs resolved plugin target instead of raw version", async () =
       return Effect.void
     },
     add: () => Effect.die("not implemented"),
-    outdated: () => Effect.succeed(false),
     which: () => Effect.succeed(Option.none()),
   })
   const testLayer = Config.layer.pipe(

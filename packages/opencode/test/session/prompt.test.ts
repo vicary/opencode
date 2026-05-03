@@ -160,6 +160,7 @@ const blockingProcessor = Layer.succeed(
   SessionProcessor.Service,
   SessionProcessor.Service.of({
     create: () => Effect.sync(() => processorCreateStarted.shift()?.()).pipe(Effect.andThen(Effect.never)),
+    repairDanglingToolCalls: () => Effect.void,
   }),
 )
 
@@ -1749,6 +1750,11 @@ unix(
         yield* prompt.cancel(chat.id)
         yield* Fiber.await(a)
       }),
+    ),
+    { git: true, config: cfg },
+    30_000,
+  )
+
 unix(
   "later user turn finalizes prior interrupted tool-call turn so loading clears",
   () =>
@@ -1823,9 +1829,6 @@ unix(
       }),
       { git: true, config: providerCfg },
     ),
-  30_000,
-)
-  { git: true, config: cfg },
   30_000,
 )
 

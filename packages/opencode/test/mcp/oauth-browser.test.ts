@@ -134,7 +134,7 @@ const mcpTest = testEffect(
   ),
 )
 const service = MCP.Service as unknown as Effect.Effect<MCPNS.Interface, never, never>
-const runInInstance = <A, E, R>(ctx: InstanceContext, effect: Effect.Effect<A, E, R>) =>
+const runInInstance = <A, E>(ctx: InstanceContext, effect: Effect.Effect<A, E, never>) =>
   AppRuntime.runPromise(effect.pipe(Effect.provideService(InstanceRef, ctx)))
 const authenticate = (ctx: InstanceContext, name: string) => runInInstance(ctx, Effect.gen(function* () {
   const mcp = yield* service

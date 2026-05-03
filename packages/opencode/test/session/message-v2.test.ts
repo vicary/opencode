@@ -1285,7 +1285,6 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
-<<<<<<< HEAD
   test("substitutes space for empty text between signed reasoning blocks", async () => {
     // Reproduces the bug pattern: [reasoning(sig), text(""), reasoning(sig), text(full)]
     const assistantID = "m-assistant"
@@ -1482,7 +1481,7 @@ describe("session.message-v2.toModelMessage", () => {
           {
             type: "file",
             mediaType: "image/png",
-            filename: undefined,
+            filename: "attachment.png",
             data: "data:image/png;base64,Zm9v",
           },
         ],

@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import path from "path"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { ConfigProvider, Deferred, Effect, Layer, Option } from "effect"
+import { realpath } from "fs/promises"
 import { TestInstance, provideInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { GlobalBus, type GlobalEvent } from "../../src/bus/global"
@@ -119,7 +120,6 @@ function noUpdate<E>(
 
 function ready(directory: string) {
   const file = path.join(directory, `.watcher-${Math.random().toString(36).slice(2)}`)
-  const head = path.join(directory, ".git", "HEAD")
 
   return Effect.gen(function* () {
     const fs = yield* AppFileSystem.Service
@@ -131,6 +131,9 @@ function ready(directory: string) {
       fs.writeFileString(file, "ready"),
     ).pipe(Effect.ensuring(fs.remove(file, { force: true }).pipe(Effect.ignore)), Effect.asVoid)
 
+    const gitDir = path.resolve(directory, (yield* git.run(["rev-parse", "--git-dir"], { cwd: directory })).text().trim())
+    const resolvedGitDir = yield* Effect.promise(() => realpath(gitDir).catch(() => gitDir))
+    const head = path.join(resolvedGitDir, "HEAD")
     if (!(yield* fs.existsSafe(head))) return
 
     const branch = `watch-${Math.random().toString(36).slice(2)}`
@@ -139,7 +142,7 @@ function ready(directory: string) {
       directory,
       (evt) => evt.file === head && evt.event !== "unlink",
       fs
-        .writeFileString(path.join(directory, ".git", "refs", "heads", branch), hash.trim() + "\n")
+        .writeFileString(path.join(resolvedGitDir, "refs", "heads", branch), hash.trim() + "\n")
         .pipe(Effect.andThen(fs.writeFileString(head, `ref: refs/heads/${branch}\n`))),
     ).pipe(Effect.asVoid)
   })

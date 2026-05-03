@@ -169,12 +169,25 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       const directory = AppFileSystem.resolve(input.directory)
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
+          const awaitEntry = (entry: Entry) => {
+            entry.used = now()
+            entry.active += 1
+            return restore(Deferred.await(entry.deferred)).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  entry.used = now()
+                  entry.active -= 1
+                }),
+              ),
+            )
+          }
+
           const existing = cache.get(directory)
           if (existing?.disposing) {
             yield* Deferred.await(existing.disposing)
             return yield* load(input)
           }
-          if (existing) return yield* awaitEntry(existing, restore)
+          if (existing) return yield* awaitEntry(existing)
 
           const entry: Entry = createEntry()
           cache.set(directory, entry)
@@ -182,7 +195,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             yield* Effect.logInfo("creating instance", { directory })
             yield* completeLoad(directory, input, entry)
           }).pipe(Effect.forkIn(scope, { startImmediately: true }))
-          return yield* awaitEntry(entry, restore)
+          return yield* awaitEntry(entry)
         }),
       ).pipe(Effect.withSpan("InstanceStore.load"))
     }
