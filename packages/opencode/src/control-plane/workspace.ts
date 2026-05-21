@@ -77,6 +77,10 @@ const db = <T>(fn: (d: Parameters<typeof Database.use>[0] extends (trx: infer D)
   Effect.sync(() => Database.use(fn))
 
 const log = Log.create({ service: "workspace-sync" })
+const REMOTE_SSE_STALE_MS = 45_000
+const REMOTE_SSE_POLL_MS = 5_000
+const REMOTE_SSE_STALE_MS_OVERRIDE = "OPENCODE_REMOTE_SSE_STALE_MS"
+const REMOTE_SSE_POLL_MS_OVERRIDE = "OPENCODE_REMOTE_SSE_POLL_MS"
 
 export const CreateInput = Schema.Struct({
   id: Schema.optional(WorkspaceID),
@@ -265,6 +269,11 @@ export const layer = Layer.effect(
       )
     })
 
+    const remoteSSETiming = () => ({
+      stale: readPositiveIntegerEnv(REMOTE_SSE_STALE_MS_OVERRIDE, REMOTE_SSE_STALE_MS),
+      poll: readPositiveIntegerEnv(REMOTE_SSE_POLL_MS_OVERRIDE, REMOTE_SSE_POLL_MS),
+    })
+
     const runInWorkspace = <A, E, R>(input: {
       workspaceID?: WorkspaceID
       local: () => Effect.Effect<A, E, R>
@@ -420,12 +429,16 @@ export const layer = Layer.effect(
 
         if (stream) {
           attempt = 0
+          const timing = remoteSSETiming()
 
           log.info("global sync connected", { workspace: space.name })
           setStatus(space.id, "connected")
 
-          yield* parseSSE(stream, (evt) =>
+          let lastActivity = Date.now()
+
+          const consume = parseSSE(stream, (evt) =>
             Effect.gen(function* () {
+              lastActivity = Date.now()
               if (!evt || typeof evt !== "object" || !("payload" in evt)) return
               const payload = evt.payload as { type?: string; syncEvent?: SyncEvent.SerializedEvent }
               if (payload.type === "server.heartbeat") return
@@ -462,6 +475,21 @@ export const layer = Layer.effect(
               }
             }),
           )
+
+          const stale = Effect.gen(function* () {
+            while (true) {
+              yield* Effect.sleep(`${timing.poll} millis`)
+              if (Date.now() - lastActivity < timing.stale) continue
+              return { stale: true as const }
+            }
+          })
+
+          const result = yield* Effect.raceFirst(consume, stale)
+          if (result?.stale) {
+            log.info("dropping stale global sync stream", {
+              workspaceID: space.id,
+            })
+          }
 
           log.info("disconnected from global sync: " + space.id)
           setStatus(space.id, "disconnected")
@@ -1067,6 +1095,13 @@ function route(url: string | URL, path: string) {
   next.search = ""
   next.hash = ""
   return next
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const value = process.env[name]
+  if (!value) return fallback
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 export * as Workspace from "./workspace"

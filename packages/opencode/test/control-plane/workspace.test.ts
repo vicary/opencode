@@ -43,6 +43,8 @@ void Log.init({ print: false })
 const originalEnv = {
   OPENCODE_AUTH_CONTENT: process.env.OPENCODE_AUTH_CONTENT,
   OPENCODE_EXPERIMENTAL_WORKSPACES: process.env.OPENCODE_EXPERIMENTAL_WORKSPACES,
+  OPENCODE_REMOTE_SSE_STALE_MS: process.env.OPENCODE_REMOTE_SSE_STALE_MS,
+  OPENCODE_REMOTE_SSE_POLL_MS: process.env.OPENCODE_REMOTE_SSE_POLL_MS,
   OTEL_EXPORTER_OTLP_HEADERS: process.env.OTEL_EXPORTER_OTLP_HEADERS,
   OTEL_EXPORTER_OTLP_ENDPOINT: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
   OTEL_RESOURCE_ATTRIBUTES: process.env.OTEL_RESOURCE_ATTRIBUTES,
@@ -1246,6 +1248,64 @@ describe("workspace sync state", () => {
             } finally {
               captured.dispose()
             }
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("stale remote SSE stream is dropped and replaced", () => {
+    const calls: Array<{ pathname: string; index: number }> = []
+    let eventRequests = 0
+
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const url = new URL(req.url, "http://localhost")
+          if (url.pathname === "/stale/global/event") {
+            const index = eventRequests++
+            calls.push({ pathname: url.pathname, index })
+            return HttpServerResponse.fromWeb(
+              index === 0
+                ? eventStreamResponse([{ payload: { type: "server.connected", properties: {} } }], true)
+                : eventStreamResponse([], true),
+            )
+          }
+          if (url.pathname === "/stale/sync/history") {
+            calls.push({ pathname: url.pathname, index: -1 })
+            return HttpServerResponse.fromWeb(Response.json([]))
+          }
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.Service
+            const sessionSvc = yield* SessionNs.Service
+            const instance = yield* InstanceRef
+            if (!instance) return yield* Effect.die(new Error("missing test instance"))
+
+            const type = unique("remote-stale")
+            const info = workspaceInfo(instance.project.id, type)
+            insertWorkspace(info)
+            registerAdapter(instance.project.id, type, remoteAdapter(`${url}/stale`).adapter)
+            attachSessionToWorkspace((yield* sessionSvc.create({})).id, info.id)
+            process.env.OPENCODE_REMOTE_SSE_STALE_MS = "200"
+            process.env.OPENCODE_REMOTE_SSE_POLL_MS = "25"
+
+            yield* workspace.startWorkspaceSyncing(instance.project.id)
+
+            yield* eventuallyEffect(
+              Effect.sync(() => {
+                expect(calls.filter((call) => call.pathname === "/stale/global/event").length).toBeGreaterThanOrEqual(2)
+              }),
+            )
+
+            yield* workspace.remove(info.id)
           }),
         { git: true },
       )
