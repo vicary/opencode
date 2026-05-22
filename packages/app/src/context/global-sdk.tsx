@@ -109,6 +109,7 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
     const HEARTBEAT_TIMEOUT_MS = 15_000
     let lastEventAt = Date.now()
     let heartbeat: ReturnType<typeof setTimeout> | undefined
+    let abortRelay: AbortController | undefined
     const resetHeartbeat = () => {
       lastEventAt = Date.now()
       if (heartbeat) clearTimeout(heartbeat)
@@ -129,14 +130,13 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
         // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
         while (!abort.signal.aborted && started) {
           attempt = new AbortController()
+          abortRelay?.abort()
+          abortRelay = new AbortController()
+          const signal = AbortSignal.any([attempt.signal, abortRelay.signal])
           lastEventAt = Date.now()
-          const onAbort = () => {
-            attempt?.abort()
-          }
-          abort.signal.addEventListener("abort", onAbort)
           try {
             const events = await eventSdk.global.event({
-              signal: attempt.signal,
+              signal,
               onSseError: (error) => {
                 if (aborted(error)) return
                 if (streamErrorLogged) return
@@ -190,7 +190,8 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
               })
             }
           } finally {
-            abort.signal.removeEventListener("abort", onAbort)
+            abortRelay?.abort()
+            abortRelay = undefined
             attempt = undefined
             clearHeartbeat()
           }
@@ -207,6 +208,8 @@ export const { use: useGlobalSDK, provider: GlobalSDKProvider } = createSimpleCo
 
     const stop = () => {
       started = false
+      abortRelay?.abort()
+      abortRelay = undefined
       attempt?.abort()
       clearHeartbeat()
     }

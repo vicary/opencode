@@ -33,7 +33,7 @@ function parseBody(body: string) {
   }
 }
 
-function eventResponse() {
+function eventResponse(request: HttpServerRequest.HttpServerRequest) {
   log.info("global event connected")
   const events = Stream.callback<GlobalBusEvent>((queue) => {
     const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
@@ -50,6 +50,18 @@ function eventResponse() {
   return HttpServerResponse.stream(
     Stream.make({ payload: { id: Bus.createID(), type: "server.connected", properties: {} } }).pipe(
       Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
+      Stream.interruptWhen(
+        Effect.callback<void>((resume, signal) => {
+          const source = request.source
+          if (!(source instanceof Request)) return
+          if (source.signal.aborted) {
+            resume(Effect.void)
+            return
+          }
+          const abort = () => resume(Effect.void)
+          source.signal.addEventListener("abort", abort, { once: true, signal })
+        }),
+      ),
       Stream.map(eventData),
       Stream.pipeThroughChannel(Sse.encode()),
       Stream.encodeText,
@@ -77,7 +89,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     })
 
     const event = Effect.fn("GlobalHttpApi.event")(function* () {
-      return eventResponse()
+      const request = yield* HttpServerRequest.HttpServerRequest
+      return eventResponse(request)
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {
