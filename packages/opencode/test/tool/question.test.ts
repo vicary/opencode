@@ -22,7 +22,8 @@ const ctx = {
 
 const it = testEffect(
   Layer.mergeAll(
-    Question.layer.pipe(Layer.provideMerge(Bus.layer)),
+    Question.defaultLayer,
+    Bus.layer,
     CrossSpawnSpawner.defaultLayer,
     Truncate.defaultLayer,
     Agent.defaultLayer,

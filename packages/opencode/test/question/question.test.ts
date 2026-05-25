@@ -1,17 +1,17 @@
 import { afterEach, expect } from "bun:test"
 import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
+import { Bus } from "../../src/bus"
 import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceRuntime } from "../../src/project/instance-runtime"
 import { QuestionID } from "../../src/question/schema"
-import { Session } from "../../src/session"
+import { Session } from "../../src/session/session"
 import { disposeAllInstances, provideInstance, reloadTestInstance, tmpdirScoped } from "../fixture/fixture"
 import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Bus } from "../../src/bus"
 
-const it = testEffect(Layer.mergeAll(Question.defaultLayer, CrossSpawnSpawner.defaultLayer))
+const it = testEffect(Layer.mergeAll(Question.defaultLayer, Session.defaultLayer, Bus.layer, CrossSpawnSpawner.defaultLayer))
 
 const askEffect = Effect.fn("QuestionTest.ask")(function* (input: {
   sessionID: SessionID

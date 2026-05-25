@@ -14,6 +14,7 @@ import { Auth } from "../../src/auth"
 import { Account } from "../../src/account/account"
 import { AccessToken, AccountID, OrgID } from "../../src/account/schema"
 import { AppFileSystem } from "@opencode-ai/core/filesystem"
+import { Npm } from "@opencode-ai/core/npm"
 import { Env } from "../../src/env"
 import {
   provideTestInstance,
@@ -998,23 +999,23 @@ test("config installs resolved plugin target instead of raw version", async () =
 
   const installs: Array<{ dir: string; version: string | undefined }> = []
   const npmMock = Layer.mock(Npm.Service)({
-    install: (dir, input) => {
+    install: (dir: string, input) => {
       installs.push({
         dir,
-        version: input?.add.find((pkg) => pkg.name === "@opencode-ai/plugin")?.version,
+        version: input?.add.find((pkg: { name: string; version?: string }) => pkg.name === "@opencode-ai/plugin")?.version,
       })
       return Effect.void
     },
     add: () => Effect.die("not implemented"),
-    outdated: () => Effect.succeed(false),
     which: () => Effect.succeed(Option.none()),
   })
   const testLayer = Config.layer.pipe(
     Layer.provide(testFlock),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(Env.defaultLayer),
-    Layer.provide(emptyAuth),
-    Layer.provide(emptyAccount),
+    Layer.provide(Layer.succeed(HttpClient.HttpClient, unexpectedHttp)),
+    Layer.provide(AuthTest.empty),
+    Layer.provide(AccountTest.empty),
     Layer.provideMerge(infra),
     Layer.provide(npmMock),
   )
@@ -1025,12 +1026,12 @@ test("config installs resolved plugin target instead of raw version", async () =
       directory: tmp.path,
       fn: async (ctx) => {
         await Effect.runPromise(
-          Config.Service.use((svc) => provideCurrentInstance(svc.get(), ctx)).pipe(Effect.scoped, Effect.provide(testLayer)),
+          Config.Service.use((svc) => provideCurrentInstance(svc.get(), ctx)).pipe(Effect.provide(testLayer), Effect.scoped),
         )
         await Effect.runPromise(
           Config.Service.use((svc) => provideCurrentInstance(svc.waitForDependencies(), ctx)).pipe(
-            Effect.scoped,
             Effect.provide(testLayer),
+            Effect.scoped,
           ),
         )
       },

@@ -145,8 +145,8 @@ export function currentPluginTarget(kind: "install" | "check") {
   })
 }
 
-export const Server = ConfigServer.Server.zod
-export const Layout = ConfigLayout.Layout.zod
+export const Server = ConfigServer.Server
+export const Layout = ConfigLayout.Layout
 export type Layout = ConfigLayout.Layout
 
 const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate({

@@ -16,7 +16,7 @@ import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { disposeAllInstances } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 afterEach(async () => {
@@ -165,11 +165,11 @@ describe("tool.task", () => {
             mode: "subagent",
           },
         },
-        },
-      ),
+      },
+    },
   )
 
-  it.live("general agent exposes question tool for subagent clarification", () =>
+  it.instance("general agent exposes question tool for subagent clarification", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const agents = yield* Agent.Service
@@ -182,7 +182,7 @@ describe("tool.task", () => {
     ),
   )
 
-  it.live("custom subagents expose question tool by default", () =>
+  it.instance("custom subagents expose question tool by default", () =>
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {
@@ -202,7 +202,7 @@ describe("tool.task", () => {
           },
         },
       },
-    },
+    ),
   )
 
   it.instance(
