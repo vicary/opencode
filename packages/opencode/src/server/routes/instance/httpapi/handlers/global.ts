@@ -11,6 +11,7 @@ import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
+import { toIncomingMessage } from "@effect/platform-node/NodeHttpServerRequest"
 import { RootHttpApi } from "../api"
 import { GlobalUpgradeInput } from "../groups/global"
 
@@ -33,7 +34,33 @@ function parseBody(body: string) {
   }
 }
 
-function eventResponse() {
+// Resolves when the client disconnects. Works for both Bun (Request.signal)
+// and Node.js HTTP (IncomingMessage socket close event) server adapters.
+function abortEffect(request: HttpServerRequest.HttpServerRequest) {
+  // Bun adapter: request.source is a Web Request with an AbortSignal.
+  if (request.source instanceof Request) {
+    const signal = request.source.signal
+    if (signal.aborted) return Effect.void
+    return Effect.callback<void>((resume) => {
+      const abort = () => resume(Effect.void)
+      signal.addEventListener("abort", abort, { once: true })
+      return Effect.sync(() => signal.removeEventListener("abort", abort))
+    })
+  }
+  // Node.js adapter: request.source is http.IncomingMessage; detect disconnect
+  // via the underlying socket's close event.
+  const incoming = toIncomingMessage(request)
+  const socket = incoming.socket
+  if (!socket) return Effect.never
+  if (socket.destroyed) return Effect.void
+  return Effect.callback<void>((resume) => {
+    const onClose = () => resume(Effect.void)
+    socket.once("close", onClose)
+    return Effect.sync(() => socket.removeListener("close", onClose))
+  })
+}
+
+function eventResponse(request: HttpServerRequest.HttpServerRequest) {
   log.info("global event connected")
   const events = Stream.callback<GlobalBusEvent>((queue) => {
     const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
@@ -50,6 +77,7 @@ function eventResponse() {
   return HttpServerResponse.stream(
     Stream.make({ payload: { id: Bus.createID(), type: "server.connected", properties: {} } }).pipe(
       Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
+      Stream.interruptWhen(abortEffect(request)),
       Stream.map(eventData),
       Stream.pipeThroughChannel(Sse.encode()),
       Stream.encodeText,
@@ -76,8 +104,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return { healthy: true as const, version: InstallationVersion }
     })
 
-    const event = Effect.fn("GlobalHttpApi.event")(function* () {
-      return eventResponse()
+    const event = Effect.fn("GlobalHttpApi.event")(function* (ctx: { request: HttpServerRequest.HttpServerRequest }) {
+      return eventResponse(ctx.request)
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {
