@@ -23,6 +23,7 @@ export interface Interface {
   readonly reload: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
+  readonly hold: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly provide: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
@@ -34,6 +35,7 @@ interface Entry {
   readonly deferred: Deferred.Deferred<InstanceContext>
   used: number
   active: number
+  hold: number
   disposing?: Deferred.Deferred<void>
 }
 
@@ -78,10 +80,11 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       deferred: Deferred.makeUnsafe<InstanceContext>(),
       used: now(),
       active: 0,
+      hold: 0,
     })
 
     const stale = (directory: string, entry: Entry, time = now()) =>
-      cache.get(directory) === entry && entry.active === 0 && time - entry.used >= INSTANCE_IDLE_MS
+      cache.get(directory) === entry && entry.active === 0 && entry.hold === 0 && time - entry.used >= INSTANCE_IDLE_MS
 
     const awaitEntry = (entry: Entry, restore: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<A, E>) =>
       Effect.gen(function* () {
@@ -92,6 +95,20 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
             Effect.sync(() => {
               entry.used = now()
               entry.active -= 1
+            }),
+          ),
+        )
+      })
+
+    const holdEntry = <A, E, R>(entry: Entry, effect: Effect.Effect<A, E, R>) =>
+      Effect.gen(function* () {
+        entry.used = now()
+        entry.hold += 1
+        return yield* effect.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              entry.used = now()
+              entry.hold -= 1
             }),
           ),
         )
@@ -243,6 +260,28 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
     const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
       load(input).pipe(Effect.flatMap((ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))))
 
+    const hold = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
+      const directory = AppFileSystem.resolve(input.directory)
+      return Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const entry = cache.get(directory)
+          if (!entry) {
+            return yield* load(input).pipe(
+              Effect.flatMap((ctx) =>
+                hold({ ...input, directory }, effect).pipe(Effect.provideService(InstanceRef, ctx)),
+              ),
+            )
+          }
+          if (entry.disposing) {
+            yield* Deferred.await(entry.disposing)
+            return yield* hold(input, effect)
+          }
+          const ctx = yield* restore(Deferred.await(entry.deferred))
+          return yield* holdEntry(entry, effect.pipe(Effect.provideService(InstanceRef, ctx)))
+        }),
+      ).pipe(Effect.withSpan("InstanceStore.hold"))
+    }
+
     yield* Effect.addFinalizer(() => disposeAll().pipe(Effect.ignore))
 
     return Service.of({
@@ -250,6 +289,7 @@ export const layer: Layer.Layer<Service, never, Project.Service | InstanceBootst
       reload,
       dispose,
       disposeAll,
+      hold,
       provide,
     })
   }),

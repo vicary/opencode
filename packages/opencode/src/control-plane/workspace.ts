@@ -183,6 +183,7 @@ export const layer = Layer.effect(
     const http = yield* HttpClient.HttpClient
     const sync = yield* SyncEvent.Service
     const vcs = yield* Vcs.Service
+    const store = yield* InstanceStore.Service
     const flags = yield* RuntimeFlags.Service
     const fs = yield* AppFileSystem.Service
     const connections = new Map<WorkspaceID, ConnectionStatus>()
@@ -297,7 +298,6 @@ export const layer = Layer.effect(
         const target = yield* WorkspaceAdapterRuntime.target(workspace)
 
         if (target.type === "local") {
-          const store = yield* InstanceStore.Service
           return yield* store.provide({ directory: target.directory }, input.local())
         }
 
@@ -677,7 +677,7 @@ export const layer = Layer.effect(
                   }),
                 fallback: "",
                 response: "text",
-              }).pipe(Effect.provide(InstanceStore.defaultLayer.pipe(Layer.provide(InstanceBootstrap.defaultLayer))))
+              })
             : ""
 
         if (sourcePatch) {
@@ -691,9 +691,9 @@ export const layer = Layer.effect(
               HttpClientRequest.post(route(target.url, "/vcs/apply"), {
                 headers: new Headers(target.headers),
                 body: HttpBody.jsonUnsafe({ patch: sourcePatch }),
-              }),
+            }),
             fallback: { applied: false },
-          }).pipe(Effect.provide(InstanceStore.defaultLayer.pipe(Layer.provide(InstanceBootstrap.defaultLayer))))
+          })
         }
 
         if (input.workspaceID === null) {
@@ -940,8 +940,7 @@ export const layer = Layer.effect(
       const sessionIDs = new Set(sessions.map((sessionInfo) => sessionInfo.id))
       yield* Effect.forEach(
         sessions.filter((sessionInfo) => !sessionInfo.parentID || !sessionIDs.has(sessionInfo.parentID)),
-        (sessionInfo) =>
-          session.remove(sessionInfo.id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.void)),
+        (sessionInfo) => session.remove(sessionInfo.id).pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.void)),
         { discard: true },
       )
 
@@ -1057,6 +1056,7 @@ export const defaultLayer = layer.pipe(
   Layer.provide(SessionPrompt.defaultLayer),
   Layer.provide(Project.defaultLayer),
   Layer.provide(Vcs.defaultLayer),
+  Layer.provide(InstanceStore.defaultLayer.pipe(Layer.provide(InstanceBootstrap.defaultLayer))),
   Layer.provide(AppFileSystem.defaultLayer),
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(RuntimeFlags.defaultLayer),

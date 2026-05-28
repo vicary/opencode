@@ -14,6 +14,8 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
+import { InstanceStore } from "@/project/instance-store"
+import { InstanceRef } from "@/effect/instance-ref"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
@@ -57,6 +59,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const bus = yield* Bus.Service
+    const store = yield* InstanceStore.Service
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -304,7 +307,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
+      const instance = yield* InstanceRef
+      if (!instance) return yield* new HttpApiError.BadRequest({})
+      yield* store.hold({ directory: instance.directory }, promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID })).pipe(
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* Effect.logError("prompt_async failed").pipe(

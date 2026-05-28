@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, jest } from "bun:test"
 import { ConfigProvider, Deferred, Effect, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import { HttpRouter } from "effect/unstable/http"
@@ -9,7 +9,7 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { validateSession } from "../../src/cli/cmd/tui/validate-session"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
-import { InstanceStore } from "../../src/project/instance-store"
+import { INSTANCE_IDLE_MS, INSTANCE_SWEEP_MS, InstanceStore } from "../../src/project/instance-store"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { Server } from "../../src/server/server"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -33,6 +33,18 @@ const it = testEffect(
     InstanceStore.defaultLayer.pipe(Layer.provide(noopBootstrap)),
   ),
 )
+
+let fake = false
+
+function clock() {
+  jest.useFakeTimers()
+  fake = true
+}
+
+async function tick(ms: number) {
+  jest.advanceTimersByTime(ms)
+  for (let i = 0; i < 5; i += 1) await new Promise<void>((done) => queueMicrotask(done))
+}
 
 const original = {
   OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
@@ -328,6 +340,11 @@ function seedMessage(directory: string, sessionID: string) {
 }
 
 afterEach(async () => {
+  if (fake) {
+    jest.clearAllTimers()
+    jest.useRealTimers()
+    fake = false
+  }
   Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
   Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
   await disposeAllInstances()
@@ -771,6 +788,58 @@ describe("HttpApi SDK", () => {
           persistedText: JSON.stringify(messages.data).includes("fake world"),
           userText: JSON.stringify(messages.data).includes("hello llm"),
         }
+      }),
+    ),
+  )
+
+  httpapi(
+    "keeps promptAsync alive past the instance idle timeout",
+    withFakeLlmProject("raw", {}, ({ sdk, llm }) =>
+      Effect.gen(function* () {
+        clock()
+        let release = () => {}
+        const wait = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        yield* llm.hold("survived idle sweep", wait)
+        const session = yield* capture(() =>
+          sdk.session.create({
+            title: "promptAsync idle keepalive",
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          }),
+        )
+        const sessionID = String(record(session.data).id)
+        const prompt = yield* capture(() =>
+          sdk.session.promptAsync({
+            sessionID,
+            agent: "build",
+            model: { providerID: "test", modelID: "test-model" },
+            parts: [{ type: "text", text: "stay alive" }],
+          }),
+        )
+
+        expect(prompt.status).toBe(204)
+        yield* llm.wait(1)
+        yield* Effect.promise(() => tick(INSTANCE_IDLE_MS + INSTANCE_SWEEP_MS))
+        jest.useRealTimers()
+        fake = false
+        yield* Effect.sync(release)
+
+        const outcome = yield* awaitWithTimeout(
+          Effect.gen(function* () {
+            while (true) {
+              const messages = yield* capture(() => sdk.session.messages({ sessionID }))
+              const serialized = JSON.stringify(messages.data)
+              if (serialized.includes("survived idle sweep")) return { state: "completed", serialized } as const
+              if (serialized.includes("MessageAbortedError")) return { state: "aborted", serialized } as const
+              yield* Effect.sleep("20 millis")
+            }
+          }),
+          "timed out waiting for promptAsync completion",
+          "10 seconds",
+        )
+
+        expect(outcome.state).toBe("completed")
       }),
     ),
   )
