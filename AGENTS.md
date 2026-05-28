@@ -4,7 +4,11 @@
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
 - Prefer automation: execute requested actions without confirmation unless blocked by missing info or safety/irreversibility.
 - Local rebased CLI builds in this fork MUST use the preview version protocol.
-- Build from `packages/opencode` with `OPENCODE_CHANNEL=latest bun run build --single`, and override version inputs when needed so the installed binary reports the next patch preview version for the rebased upstream tag, for example `1.3.4-preview.<stamp>` when rebased onto `v1.3.3`.
+- Build from `packages/opencode` with a production build command: `OPENCODE_CHANNEL=latest bun run build --single`, and override version inputs when needed so the installed binary reports the next patch preview version for the rebased upstream tag, for example `1.3.4-preview.<stamp>` when rebased onto `v1.3.3`.
+- Never run local CLI rebuilds in the foreground. Start rebuilds in the background, preferably via `tmux`, capture stdout/stderr to a log file, write the exit code to a separate marker file, and poll for completion every 120 seconds until the marker appears.
+- The build must stay production-targeted. Do not use dev servers, dev bundles, or workflows that leave the embedded web UI in a DEV build state.
+- For post-build cache cleanup in this repo, follow `docs/superpowers/specs/2026-05-27-repo-cleanup-protocol.md` and preserve `packages/opencode/dist/` unless the user explicitly asks to remove build artifacts.
+- `~/.opencode/bin/opencode` is meant to stay a symlink to the current `packages/opencode/dist/.../bin/opencode` build output. Do not replace it with a copied binary. Update the symlink target if needed, then verify through `~/.opencode/bin/opencode`.
 - Treat any plain patch version like `1.3.8` as incorrect for this workflow.
 - After the build, verify `~/.opencode/bin/opencode --version` reports the expected preview version and `~/.opencode/bin/opencode --print-logs stats` logs `service=db path=.../opencode.db opening database` rather than a channel-specific DB path.
 - If the local `PATH` does not include `~/.opencode/bin`, `opencode` may resolve to a Homebrew-installed binary instead. Add `~/.opencode/bin` to shell env vars first (for example in `~/.zshrc`) before relying on plain `opencode` checks.
