@@ -108,6 +108,12 @@ type FollowupItem = FollowupDraft & { id: string }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
 const emptyFollowups: FollowupItem[] = []
 
+type TodoRefreshState = {
+  sessionID: string | undefined
+  active: boolean
+  blocked: boolean
+}
+
 type ChangeMode = "git" | "branch" | "turn"
 type VcsMode = "git" | "branch"
 
@@ -115,6 +121,19 @@ const sessionViewState = () => ({
   messageId: undefined as string | undefined,
   mobileTab: "session" as "session" | "changes",
 })
+
+function shouldRefreshTodos(
+  next: TodoRefreshState,
+  previous: TodoRefreshState | undefined,
+  options?: { directoryChanged?: boolean },
+) {
+  if (!next.sessionID) return false
+  if (!next.active && !next.blocked) return false
+  if (options?.directoryChanged) return true
+  if (!previous) return true
+  if (previous.sessionID !== next.sessionID) return true
+  return previous.active !== next.active || previous.blocked !== next.blocked
+}
 
 function isCurrentSessionNotFoundError(error: unknown, sessionID: string | undefined) {
   if (!sessionID) return false
@@ -891,24 +910,46 @@ export default function Page() {
 
   const hasScrollGesture = () => Date.now() - ui.scrollGesture < scrollGestureWindowMs
 
+  const todoRefreshState = createMemo((previous: TodoRefreshState | undefined) => {
+    const id = params.id
+    const next = {
+      sessionID: id,
+      active: id ? (sync().data.session_status[id]?.type ?? "idle") !== "idle" : false,
+      blocked: id ? composer.blocked() : false,
+    }
+    if (
+      previous &&
+      previous.sessionID === next.sessionID &&
+      previous.active === next.active &&
+      previous.blocked === next.blocked
+    ) {
+      return previous
+    }
+    return next
+  })
+
   createEffect(
     on(
       () => {
-        const id = params.id
         return [
           sdk().directory,
-          id,
-          id ? (sync().data.session_status[id]?.type ?? "idle") : "idle",
-          id ? composer.blocked() : false,
+          todoRefreshState(),
         ] as const
       },
-      ([dir, id, status, blocked]) => {
+      ([dir, state], previous) => {
         if (todoFrame !== undefined) cancelAnimationFrame(todoFrame)
         if (todoTimer !== undefined) window.clearTimeout(todoTimer)
         todoFrame = undefined
         todoTimer = undefined
+        if (
+          !shouldRefreshTodos(state, previous?.[1], {
+            directoryChanged: previous?.[0] !== dir,
+          })
+        ) {
+          return
+        }
+        const id = state.sessionID
         if (!id) return
-        if (status === "idle" && !blocked) return
         const cached = untrack(() => sync().data.todo[id] !== undefined)
 
         todoFrame = requestAnimationFrame(() => {
