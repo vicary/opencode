@@ -1,14 +1,17 @@
-import { Effect, Option, Schema, Scope, Stream } from "effect"
+import { Effect, Option, Schema, Stream } from "effect"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as path from "path"
 import * as Tool from "./tool"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { PluginV2 } from "@opencode-ai/core/plugin"
+import { Reference } from "@opencode-ai/core/reference"
+import { RepositoryCache } from "@opencode-ai/core/repository-cache"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -64,14 +67,16 @@ type Metadata = {
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | PluginV2.Service | Reference.Service | RepositoryCache.Service | RuntimeFlags.Service
 >(
   "read",
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const instruction = yield* Instruction.Service
-    const lsp = yield* LSP.Service
-    const scope = yield* Scope.Scope
+    const plugin = yield* PluginV2.Service
+    const reference = yield* Reference.Service
+    const repositoryCache = yield* RepositoryCache.Service
+    const flags = yield* RuntimeFlags.Service
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
@@ -114,9 +119,28 @@ export const ReadTool = Tool.define<
       ).pipe(Effect.map((items: string[]) => items.sort((a, b) => a.localeCompare(b))))
     })
 
-    const warm = Effect.fn("ReadTool.warm")(function* (filepath: string) {
-      // LSP warm-up is optional; do not let a background defect fail an otherwise successful read.
-      yield* lsp.touchFile(filepath).pipe(Effect.ignoreCause, Effect.forkIn(scope))
+    const configuredReference = Effect.fn("ReadTool.configuredReference")(function* (filepath: string) {
+      if (!flags.experimentalReferences) return false
+
+      yield* plugin.wait(PluginV2.ID.make("core/config-reference"))
+      const match = (yield* reference.list()).find(
+        (item) => item.source.type === "git" && FSUtil.contains(item.path, filepath),
+      )
+      if (!match || match.source.type !== "git") return false
+
+      const remote = yield* RepositoryCache.parseRemote(match.source.repository).pipe(Effect.option)
+      if (remote._tag === "Some") {
+        yield* repositoryCache.ensure({ reference: remote.value, branch: match.source.branch, refresh: true }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("configured reference materialization failed", {
+              filepath,
+              reference: match.name,
+              cause,
+            }),
+          ),
+        )
+      }
+      return true
     })
 
     const readSample = Effect.fn("ReadTool.readSample")(function* (
@@ -239,6 +263,7 @@ export const ReadTool = Tool.define<
         filepath = FSUtil.normalizePath(filepath)
       }
       const title = path.relative(instance.worktree, filepath)
+      const bypass = Boolean(ctx.extra?.["bypassCwdCheck"]) || (yield* configuredReference(filepath))
 
       const stat = yield* fs.stat(filepath).pipe(
         Effect.catchIf(
@@ -248,7 +273,7 @@ export const ReadTool = Tool.define<
       )
 
       yield* assertExternalDirectoryEffect(ctx, filepath, {
-        bypass: Boolean(ctx.extra?.["bypassCwdCheck"]),
+        bypass,
         kind: stat?.type === "Directory" ? "directory" : "file",
       })
 
@@ -349,8 +374,6 @@ export const ReadTool = Tool.define<
         output += `\n\n(End of file - total ${file.count} lines)`
       }
       output += "\n</content>"
-
-      yield* warm(filepath)
 
       if (loaded.length > 0) {
         output += `\n\n<system-reminder>\n${loaded.map((item) => item.content).join("\n\n")}\n</system-reminder>`

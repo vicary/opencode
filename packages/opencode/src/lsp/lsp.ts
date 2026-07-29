@@ -8,12 +8,15 @@ import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Duration, Effect, Layer, Context, Schema, Schedule } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
+
+const LSP_IDLE_MS = 300_000
+const LSP_SWEEP_MS = 30_000
 
 export const Event = LspEvent
 
@@ -109,8 +112,13 @@ const filterExperimentalServers = (servers: Record<string, LSPServer.Info>, flag
 
 type LocInput = { file: string; line: number; character: number }
 
+type Client = {
+  info: LSPClient.Info
+  used: number
+}
+
 interface State {
-  clients: LSPClient.Info[]
+  clients: Map<string, Client>
   servers: Record<string, LSPServer.Info>
   broken: Set<string>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
@@ -189,15 +197,45 @@ const layer = Layer.effect(
         }
 
         const s: State = {
-          clients: [],
+          clients: new Map(),
           servers,
           broken: new Set(),
           spawning: new Map(),
         }
 
+        const sweep = Effect.gen(function* () {
+          const used = Date.now()
+          yield* Effect.forEach(
+            [...s.clients.entries()],
+            ([id, client]) =>
+              Effect.gen(function* () {
+                if (s.clients.get(id) !== client) return
+                if (used - client.used < LSP_IDLE_MS) return
+                s.clients.delete(id)
+                yield* Effect.promise(() => client.info.shutdown()).pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("idle lsp client eviction failed", {
+                      id,
+                      root: client.info.root,
+                      serverID: client.info.serverID,
+                      error,
+                    }),
+                  ),
+                )
+              }),
+            { discard: true },
+          )
+        })
+
+        yield* sweep.pipe(
+          Effect.repeat(Schedule.spaced(Duration.millis(LSP_SWEEP_MS))),
+          Effect.catchCause((cause) => Effect.logWarning("lsp idle sweep failed", { cause })),
+          Effect.forkScoped,
+        )
+
         yield* Effect.addFinalizer(() =>
           Effect.promise(async () => {
-            await Promise.all(s.clients.map((client) => client.shutdown()))
+            await Promise.all([...s.clients.values()].map((client) => client.info.shutdown()))
           }),
         )
 
@@ -205,24 +243,30 @@ const layer = Layer.effect(
       }),
     )
 
+    const key = (root: string, serverID: string) => `${root}\u0000${serverID}`
+    const touch = (clients: Client[]) => {
+      const used = Date.now()
+      for (const client of clients) client.used = used
+    }
+
     const getClients = Effect.fnUntraced(function* (file: string) {
       const ctx = yield* InstanceState.context
       if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
       const s = yield* InstanceState.get(state)
       const clients = yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
-        const result: LSPClient.Info[] = []
+        const result: Client[] = []
         let updated = 0
 
-        async function schedule(server: LSPServer.Info, root: string, key: string) {
+        async function schedule(server: LSPServer.Info, root: string, id: string) {
           const handle = await server
             .spawn(root, ctx, flags)
             .then((value) => {
-              if (!value) s.broken.add(key)
+              if (!value) s.broken.add(id)
               return value
             })
             .catch(() => {
-              s.broken.add(key)
+              s.broken.add(id)
               return undefined
             })
 
@@ -234,20 +278,20 @@ const layer = Layer.effect(
             directory: ctx.directory,
             instance: ctx,
           }).catch(async () => {
-            s.broken.add(key)
+            s.broken.add(id)
             await Process.stop(handle.process)
             return undefined
           })
 
           if (!client) return undefined
 
-          const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
+          const existing = s.clients.get(id)
           if (existing) {
             await Process.stop(handle.process)
-            return existing
+            return existing.info
           }
 
-          s.clients.push(client)
+          s.clients.set(id, { info: client, used: Date.now() })
           return client
         }
 
@@ -256,39 +300,45 @@ const layer = Layer.effect(
 
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
+          const id = key(root, server.id)
+          if (s.broken.has(id)) continue
 
-          const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
+          const match = s.clients.get(id)
           if (match) {
             result.push(match)
             continue
           }
 
-          const inflight = s.spawning.get(root + server.id)
+          const inflight = s.spawning.get(id)
           if (inflight) {
             const client = await inflight
             if (!client) continue
-            result.push(client)
+            const next = s.clients.get(id)
+            if (!next) continue
+            result.push(next)
             continue
           }
 
-          const task = schedule(server, root, root + server.id)
-          s.spawning.set(root + server.id, task)
+          const task = schedule(server, root, id)
+          s.spawning.set(id, task)
 
           task.finally(() => {
-            if (s.spawning.get(root + server.id) === task) {
-              s.spawning.delete(root + server.id)
+            if (s.spawning.get(id) === task) {
+              s.spawning.delete(id)
             }
           })
 
           const client = await task
           if (!client) continue
 
-          result.push(client)
+          const next = s.clients.get(id)
+          if (!next) continue
+          result.push(next)
           updated++
         }
 
-        return { result, updated }
+        touch(result)
+        return { result: result.map((client) => client.info), updated }
       })
       yield* Effect.forEach(Array.from({ length: clients.updated }), () => events.publish(Event.Updated, {}), {
         discard: true,
@@ -303,7 +353,14 @@ const layer = Layer.effect(
 
     const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
       const s = yield* InstanceState.get(state)
-      return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
+      return yield* Effect.promise(() => Promise.all([...s.clients.values()].map((client) => fn(client.info))))
+    })
+
+    const runLive = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
+      const s = yield* InstanceState.get(state)
+      const clients = [...s.clients.values()]
+      touch(clients)
+      return yield* Effect.promise(() => Promise.all(clients.map((client) => fn(client.info))))
     })
 
     const init = Effect.fn("LSP.init")(function* () {
@@ -314,11 +371,11 @@ const layer = Layer.effect(
       const ctx = yield* InstanceState.context
       const s = yield* InstanceState.get(state)
       const result: Status[] = []
-      for (const client of s.clients) {
+      for (const client of s.clients.values()) {
         result.push({
-          id: client.serverID,
-          name: s.servers[client.serverID].id,
-          root: path.relative(ctx.directory, client.root),
+          id: client.info.serverID,
+          name: s.servers[client.info.serverID].id,
+          root: path.relative(ctx.directory, client.info.root),
           status: "connected",
         })
       }
@@ -334,7 +391,7 @@ const layer = Layer.effect(
           if (server.extensions.length && !server.extensions.includes(extension)) continue
           const root = await server.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
+          if (s.broken.has(key(root, server.id))) continue
           return true
         }
         return false
@@ -363,7 +420,7 @@ const layer = Layer.effect(
 
     const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
       const results: Record<string, LSPClient.Diagnostic[]> = {}
-      const all = yield* runAll(async (client) => client.diagnostics)
+      const all = yield* runLive(async (client) => client.diagnostics)
       for (const result of all) {
         for (const [p, diags] of result.entries()) {
           const arr = results[p] || []
@@ -431,7 +488,7 @@ const layer = Layer.effect(
     })
 
     const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string) {
-      const results = yield* runAll((client) =>
+      const results = yield* runLive((client) =>
         client.connection
           .sendRequest<Symbol[]>("workspace/symbol", { query })
           .then((result) => result.filter((x) => kinds.includes(x.kind)).slice(0, 10))

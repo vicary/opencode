@@ -6,10 +6,13 @@ import { WorkspaceContext } from "@/control-plane/workspace-context"
 import { InstanceRef } from "@/effect/instance-ref"
 import { disposeInstance as runDisposers } from "@/effect/instance-registry"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { Context, Deferred, Duration, Effect, Exit, Layer, Scope } from "effect"
+import { Context, Deferred, Duration, Effect, Exit, Layer, Schedule, Scope } from "effect"
 import { type InstanceContext } from "./instance-context"
 import { InstanceBootstrap } from "./bootstrap-service"
 import * as Project from "./project"
+
+const INSTANCE_IDLE_MS = 300_000
+const INSTANCE_SWEEP_MS = 30_000
 
 export interface LoadInput {
   directory: string
@@ -23,6 +26,7 @@ export interface Interface {
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeDirectory: (directory: string) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
+  readonly hold: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly provide: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
@@ -32,6 +36,10 @@ export const use = serviceUse(Service)
 
 interface Entry {
   readonly deferred: Deferred.Deferred<InstanceContext>
+  used: number
+  active: number
+  hold: number
+  disposing?: Deferred.Deferred<void>
 }
 
 const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Service> = Layer.effect(
@@ -41,6 +49,11 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     const bootstrap = yield* InstanceBootstrap.Service
     const scope = yield* Scope.Scope
     const cache = new Map<string, Entry>()
+
+    const now = () => Date.now()
+    const touch = (entry: Entry) => {
+      entry.used = now()
+    }
 
     const boot = (input: LoadInput & { directory: string }) =>
       Effect.gen(function* () {
@@ -67,6 +80,40 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
         if (cache.get(directory) !== entry) return false
         cache.delete(directory)
         return true
+      })
+
+    const createEntry = () => ({
+      deferred: Deferred.makeUnsafe<InstanceContext>(),
+      used: now(),
+      active: 0,
+      hold: 0,
+    })
+
+    const stale = (directory: string, entry: Entry, used = now()) => {
+      if (cache.get(directory) !== entry) return false
+      if (entry.disposing) return false
+      if (entry.active > 0) return false
+      if (entry.hold > 0) return false
+      return used - entry.used >= INSTANCE_IDLE_MS
+    }
+
+    const withCounter = <A, E, R>(
+      entry: Entry,
+      key: "active" | "hold",
+      restore: <A2, E2, R2>(effect: Effect.Effect<A2, E2, R2>) => Effect.Effect<A2, E2, R2>,
+      effect: Effect.Effect<A, E, R>,
+    ) =>
+      Effect.gen(function* () {
+        touch(entry)
+        entry[key] += 1
+        return yield* restore(effect).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              touch(entry)
+              entry[key] -= 1
+            }),
+          ),
+        )
       })
 
     const completeLoad = (directory: string, input: LoadInput, entry: Entry) =>
@@ -105,22 +152,96 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       return true
     })
 
-    const load = (input: LoadInput): Effect.Effect<InstanceContext> => {
+    const closeEntry = Effect.fnUntraced(function* (
+      directory: string,
+      entry: Entry,
+      options?: { idle?: boolean; replaced?: boolean },
+    ) {
+      if (entry.disposing) return yield* Deferred.await(entry.disposing)
+      if (options?.idle && !stale(directory, entry)) return
+
+      const disposing = Deferred.makeUnsafe<void>()
+      entry.disposing = disposing
+      const exit = yield* Effect.gen(function* () {
+        const ctx = yield* Deferred.await(entry.deferred)
+        if (options?.idle && !stale(directory, entry)) return
+        if (options?.replaced) {
+          yield* disposeContext(ctx)
+          return
+        }
+        yield* disposeEntry(directory, entry, ctx).pipe(Effect.asVoid)
+      }).pipe(Effect.exit)
+
+      if (cache.get(directory) === entry) entry.disposing = undefined
+      yield* Deferred.done(disposing, exit).pipe(Effect.asVoid)
+      if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
+    })
+
+    const ensureEntry = Effect.fnUntraced(function* (
+      directory: string,
+      input: LoadInput,
+      restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+    ) {
+      const existing = cache.get(directory)
+      if (existing?.disposing) {
+        yield* restore(Deferred.await(existing.disposing))
+        return yield* ensureEntry(directory, input, restore)
+      }
+      if (existing) {
+        touch(existing)
+        return existing
+      }
+
+      const entry = createEntry()
+      cache.set(directory, entry)
+      yield* Effect.gen(function* () {
+        yield* Effect.logInfo("creating instance", { directory })
+        yield* completeLoad(directory, input, entry)
+      }).pipe(Effect.forkIn(scope, { startImmediately: true }))
+      return entry
+    })
+
+    const useEntry = <A, E, R>(
+      input: LoadInput,
+      key: "active" | "hold",
+      effect: (ctx: InstanceContext) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> => {
       const directory = FSUtil.resolve(input.directory)
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
-          const existing = cache.get(directory)
-          if (existing) return yield* restore(Deferred.await(existing.deferred))
-
-          const entry: Entry = { deferred: Deferred.makeUnsafe<InstanceContext>() }
-          cache.set(directory, entry)
-          yield* Effect.gen(function* () {
-            yield* Effect.logInfo("creating instance", { directory: directory })
-            yield* completeLoad(directory, input, entry)
-          }).pipe(Effect.forkIn(scope, { startImmediately: true }))
-          return yield* restore(Deferred.await(entry.deferred))
+          const entry = yield* ensureEntry(directory, input, restore)
+          return yield* withCounter(
+            entry,
+            key,
+            restore,
+            Deferred.await(entry.deferred).pipe(Effect.flatMap((ctx) => effect(ctx))),
+          )
         }),
-      ).pipe(Effect.withSpan("InstanceStore.load"))
+      )
+    }
+
+    const sweepIdle = Effect.fnUntraced(function* () {
+      const used = now()
+      yield* Effect.forEach(
+        [...cache.entries()].filter(([directory, entry]) => stale(directory, entry, used)),
+        ([directory, entry]) =>
+          closeEntry(directory, entry, { idle: true }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("idle instance dispose failed", { directory, cause }),
+            ),
+          ),
+        { discard: true },
+      )
+    })
+
+    yield* sweepIdle.pipe(
+      Effect.repeat(Schedule.spaced(Duration.millis(INSTANCE_SWEEP_MS))),
+      Effect.catchCause((cause) => Effect.logWarning("instance idle sweep failed", { cause })),
+      Effect.forkIn(scope, { startImmediately: true }),
+    )
+
+    const load = (input: LoadInput): Effect.Effect<InstanceContext> => {
+      return useEntry(input, "active", (ctx) => Effect.succeed(ctx)).pipe(Effect.withSpan("InstanceStore.load"))
     }
 
     const reload = (input: LoadInput): Effect.Effect<InstanceContext> => {
@@ -128,18 +249,15 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const previous = cache.get(directory)
-          const entry: Entry = { deferred: Deferred.makeUnsafe<InstanceContext>() }
+          if (previous?.disposing) yield* restore(Deferred.await(previous.disposing))
+          const entry = createEntry()
           cache.set(directory, entry)
           yield* Effect.gen(function* () {
-            yield* Effect.logInfo("reloading instance", { directory: directory })
-            if (previous) {
-              yield* Deferred.await(previous.deferred).pipe(Effect.ignore)
-              yield* Effect.promise(() => runDisposers(directory))
-              yield* emitDisposed({ directory, project: input.project?.id })
-            }
+            yield* Effect.logInfo("reloading instance", { directory })
+            if (previous) yield* closeEntry(directory, previous, { replaced: true }).pipe(Effect.ignore)
             yield* completeLoad(directory, input, entry)
           }).pipe(Effect.forkIn(scope, { startImmediately: true }))
-          return yield* restore(Deferred.await(entry.deferred))
+          return yield* withCounter(entry, "active", restore, Deferred.await(entry.deferred))
         }),
       ).pipe(Effect.withSpan("InstanceStore.reload"))
     }
@@ -151,7 +269,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
       if (Exit.isFailure(exit)) return yield* removeEntry(ctx.directory, entry).pipe(Effect.asVoid)
       if (exit.value !== ctx) return
-      yield* disposeEntry(ctx.directory, entry, ctx).pipe(Effect.asVoid)
+      yield* closeEntry(ctx.directory, entry).pipe(Effect.asVoid)
     })
 
     const disposeDirectory = Effect.fn("InstanceStore.disposeDirectory")(function* (input: string) {
@@ -160,22 +278,22 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       if (!entry) return
       const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
       if (Exit.isFailure(exit)) return yield* removeEntry(directory, entry).pipe(Effect.asVoid)
-      yield* disposeEntry(directory, entry, exit.value).pipe(Effect.asVoid)
+      yield* closeEntry(directory, entry).pipe(Effect.asVoid)
     })
 
     const disposeAllOnce = Effect.fnUntraced(function* () {
       yield* Effect.logInfo("disposing all instances")
       yield* Effect.forEach(
         [...cache.entries()],
-        (item) =>
+        ([directory, entry]) =>
           Effect.gen(function* () {
-            const exit = yield* Deferred.await(item[1].deferred).pipe(Effect.exit)
+            const exit = yield* Deferred.await(entry.deferred).pipe(Effect.exit)
             if (Exit.isFailure(exit)) {
-              yield* Effect.logWarning("instance dispose failed", { key: item[0], cause: exit.cause })
-              yield* removeEntry(item[0], item[1])
+              yield* Effect.logWarning("instance dispose failed", { key: directory, cause: exit.cause })
+              yield* removeEntry(directory, entry)
               return
             }
-            yield* disposeEntry(item[0], item[1], exit.value)
+            yield* closeEntry(directory, entry)
           }),
         { discard: true },
       )
@@ -187,7 +305,14 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     })
 
     const provide = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-      load(input).pipe(Effect.flatMap((ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))))
+      useEntry(input, "active", (ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))).pipe(
+        Effect.withSpan("InstanceStore.provide"),
+      )
+
+    const hold = <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      useEntry(input, "hold", (ctx) => effect.pipe(Effect.provideService(InstanceRef, ctx))).pipe(
+        Effect.withSpan("InstanceStore.hold"),
+      )
 
     yield* Effect.addFinalizer(() => disposeAll().pipe(Effect.ignore))
 
@@ -197,6 +322,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       dispose,
       disposeDirectory,
       disposeAll,
+      hold,
       provide,
     })
   }),
