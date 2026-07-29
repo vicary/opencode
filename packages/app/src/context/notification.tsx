@@ -10,6 +10,8 @@ import { useSettings } from "@/context/settings"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { decode64 } from "@/utils/base64"
 import { EventSessionError } from "@opencode-ai/sdk/v2"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { Dialog } from "@opencode-ai/ui/dialog"
 import { Persist, persisted } from "@/utils/persist"
 import { playSoundById } from "@/utils/sound"
 import { useGlobal } from "./global"
@@ -54,6 +56,7 @@ type NotificationIndex = {
 
 const MAX_NOTIFICATIONS = 500
 const NOTIFICATION_TTL_MS = 1000 * 60 * 60 * 24 * 30
+const PLUGIN_ERROR_DIALOG_DEDUP_MS = 5_000
 
 function pruneNotifications(list: Notification[]) {
   const cutoff = Date.now() - NOTIFICATION_TTL_MS
@@ -121,6 +124,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const platform = usePlatform()
     const settings = useSettings()
     const language = useLanguage()
+    const dialog = useDialog()
     const owner = getOwner()
     const states = new Map<ServerScope, { dispose: () => void; state: NotificationState }>()
 
@@ -150,6 +154,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
             active: () => server.scope(activeServer()) === ctx.sdk.scope,
             directory: activeDirectory,
             sessionID: activeSession,
+            dialog,
             platform,
             settings,
             language,
@@ -214,6 +219,7 @@ function createServerNotificationState(input: {
   active: Accessor<boolean>
   directory: Accessor<string | undefined>
   sessionID: Accessor<string | undefined>
+  dialog: ReturnType<typeof useDialog>
   platform: ReturnType<typeof usePlatform>
   settings: ReturnType<typeof useSettings>
   language: ReturnType<typeof useLanguage>
@@ -228,6 +234,7 @@ function createServerNotificationState(input: {
 
   const currentDirectory = input.directory
   const currentSession = input.sessionID
+  const dialog = input.dialog
 
   const [store, setStore, _, ready] = persisted(
     Persist.serverGlobal(serverSDK().scope, "notification", ["notification.v1"]),
@@ -238,6 +245,7 @@ function createServerNotificationState(input: {
   const [index, setIndex] = createStore<NotificationIndex>(buildNotificationIndex(store.list))
 
   const meta = { pruned: false, disposed: false }
+  const pluginDialogs = new Map<string, number>()
 
   const updateUnseen = (scope: "session" | "project", key: string, unseen: Notification[]) => {
     setIndex(scope, "unseen", key, unseen)
@@ -384,6 +392,7 @@ function createServerNotificationState(input: {
       const description =
         session?.title ??
         (typeof error === "string" ? error : language.t("notification.session.error.fallbackDescription"))
+      showPluginErrorDialog(dialog, language, pluginDialogs, error, time)
       const href = sessionID ? `/${base64Encode(directory)}/session/${sessionID}` : `/${base64Encode(directory)}`
       if (settings.notifications.errors()) {
         void platform.notify(language.t("notification.session.error.title"), description, href)
@@ -475,4 +484,40 @@ function createServerNotificationState(input: {
       },
     },
   }
+}
+
+function showPluginErrorDialog(
+  dialog: ReturnType<typeof useDialog>,
+  language: ReturnType<typeof useLanguage>,
+  pluginDialogs: Map<string, number>,
+  error: EventSessionError["properties"]["error"],
+  time: number,
+) {
+  const message = pluginErrorMessage(error)
+  if (!message) return
+  if (!isPluginErrorMessage(message)) return
+
+  Array.from(pluginDialogs.entries())
+    .filter((entry) => time - entry[1] >= PLUGIN_ERROR_DIALOG_DEDUP_MS)
+    .forEach((entry) => pluginDialogs.delete(entry[0]))
+
+  const lastShown = pluginDialogs.get(message)
+  if (lastShown && time - lastShown < PLUGIN_ERROR_DIALOG_DEDUP_MS) return
+
+  pluginDialogs.set(message, time)
+  dialog.show(() => <Dialog title={language.t("notification.session.error.title")} description={message} fit />)
+}
+
+function pluginErrorMessage(error: EventSessionError["properties"]["error"]) {
+  if (typeof error === "string") return error
+  if (error?.name !== "UnknownError") return
+  return error.data.message
+}
+
+function isPluginErrorMessage(message: string) {
+  return (
+    message.startsWith("Failed to install plugin ") ||
+    message.startsWith("Failed to load plugin ") ||
+    /^Plugin .+ skipped: /.test(message)
+  )
 }
