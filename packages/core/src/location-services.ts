@@ -24,6 +24,7 @@ import { Pty } from "./pty"
 import { QuestionV2 } from "./question"
 import { Reference } from "./reference"
 import { ReferenceGuidance } from "./reference/guidance"
+import { RepositoryCache } from "./repository-cache"
 import * as SessionRunnerLLM from "./session/runner/llm"
 import { SessionRunnerModel } from "./session/runner/model"
 import { SessionTodo } from "./session/todo"
@@ -46,6 +47,7 @@ export const locationServices = LayerNode.group([
   AgentV2.node,
   CommandV2.node,
   Reference.node,
+  RepositoryCache.node,
   Integration.node,
   Catalog.node,
   AISDK.node,

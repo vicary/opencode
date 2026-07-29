@@ -57,6 +57,7 @@ import { McpCatalog } from "@/mcp/catalog"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import { RepositoryCache } from "@opencode-ai/core/repository-cache"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
@@ -97,6 +98,7 @@ const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const mcp = yield* MCP.Service
     const locations = yield* LocationServiceMap.Service
+    const repositoryCache = yield* RepositoryCache.Service
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
@@ -256,6 +258,7 @@ const layer = Layer.effect(
         return yield* Tool.init(
           yield* ReadTool.pipe(
             Effect.provide(location),
+            Effect.provideService(RepositoryCache.Service, repositoryCache),
             Effect.provideService(Agent.Service, agents),
             Effect.provideService(FSUtil.Service, fs),
             Effect.provideService(Instruction.Service, instruction),
@@ -475,6 +478,7 @@ export const node = LayerNode.make({
     Database.node,
     Ripgrep.node,
     locationServiceMapNode,
+    RepositoryCache.node,
   ],
 })
 

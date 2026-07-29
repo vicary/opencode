@@ -109,6 +109,15 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("initializes the location-backed read tool", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const named = yield* registry.named()
+
+      expect(named.read.id).toBe("read")
+    }),
+  )
+
   it.instance("does not expose execute unless code mode is enabled", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
