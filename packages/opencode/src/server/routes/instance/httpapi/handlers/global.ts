@@ -5,6 +5,7 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { toIncomingMessage } from "@effect/platform-node/NodeHttpServerRequest"
 import { Effect, Queue, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
@@ -30,7 +31,27 @@ function parseBody(body: string) {
   }
 }
 
-function eventResponse() {
+function abortEffect(request: HttpServerRequest.HttpServerRequest) {
+  if (request.source instanceof Request) {
+    if (request.source.signal.aborted) return Effect.void
+    return Effect.callback<void>((resume) => {
+      const abort = () => resume(Effect.void)
+      request.source.signal.addEventListener("abort", abort, { once: true })
+      return Effect.sync(() => request.source.signal.removeEventListener("abort", abort))
+    })
+  }
+
+  const socket = toIncomingMessage(request).socket
+  if (!socket) return Effect.never
+  if (socket.destroyed) return Effect.void
+  return Effect.callback<void>((resume) => {
+    const close = () => resume(Effect.void)
+    socket.once("close", close)
+    return Effect.sync(() => socket.removeListener("close", close))
+  })
+}
+
+function eventResponse(request: HttpServerRequest.HttpServerRequest) {
   return Effect.gen(function* () {
     yield* Effect.logInfo("global event connected")
     const events = Stream.callback<GlobalBusEvent>((queue) => {
@@ -48,6 +69,7 @@ function eventResponse() {
     return HttpServerResponse.stream(
       Stream.make({ payload: { id: EventV2.ID.create(), type: "server.connected", properties: {} } }).pipe(
         Stream.concat(events.pipe(Stream.merge(heartbeat, { haltStrategy: "left" }))),
+        Stream.interruptWhen(abortEffect(request)),
         Stream.map(eventData),
         Stream.pipeThroughChannel(Sse.encode()),
         Stream.encodeText,
@@ -75,8 +97,10 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return { healthy: true as const, version: InstallationVersion }
     })
 
-    const event = Effect.fn("GlobalHttpApi.event")(function* () {
-      return yield* eventResponse()
+    const event = Effect.fn("GlobalHttpApi.event")(function* (ctx: {
+      request: HttpServerRequest.HttpServerRequest
+    }) {
+      return yield* eventResponse(ctx.request)
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {

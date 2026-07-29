@@ -128,6 +128,9 @@ type SessionWarpError =
 type WaitForSyncError = SyncTimeoutError | SyncAbortedError
 type SyncLoopError = SyncHttpError | HttpClientError.HttpClientError
 
+const REMOTE_SSE_STALE_MS = 45_000
+const REMOTE_SSE_POLL_MS = 5_000
+
 export interface Interface {
   readonly create: (input: CreateInput) => Effect.Effect<Info, CreateError>
   readonly sessionWarp: (input: SessionWarpInput) => Effect.Effect<void, SessionWarpError>
@@ -392,40 +395,55 @@ const layer = Layer.effect(
 
           setStatus(space.id, "connected")
 
-          yield* parseSSE(stream, (evt) =>
-            Effect.gen(function* () {
-              if (!evt || typeof evt !== "object" || !("payload" in evt)) return
-              const payload = evt.payload as { type?: string; syncEvent?: EventV2.SerializedEvent }
-              if (payload.type === "server.heartbeat") return
+          let lastActivity = Date.now()
 
-              if (payload.type === "sync" && payload.syncEvent) {
-                const failed = yield* events.replay(payload.syncEvent, { publish: true, ownerID: space.id }).pipe(
-                  Effect.as(false),
-                  Effect.catchCause((error) =>
-                    Effect.logWarning("failed to replay global event", error).pipe(
-                      Effect.annotateLogs({ workspaceID: space.id }),
-                      Effect.as(true),
+          const stale = Effect.gen(function* () {
+            while (true) {
+              yield* Effect.sleep(`${REMOTE_SSE_POLL_MS} millis`)
+              if (Date.now() - lastActivity < REMOTE_SSE_STALE_MS) continue
+              yield* Effect.logInfo("dropping stale global sync stream", { workspaceID: space.id })
+              return { stale: true as const }
+            }
+          })
+
+          yield* Effect.raceFirst(
+            parseSSE(stream, (evt) =>
+              Effect.gen(function* () {
+                lastActivity = Date.now()
+                if (!evt || typeof evt !== "object" || !("payload" in evt)) return
+                const payload = evt.payload as { type?: string; syncEvent?: EventV2.SerializedEvent }
+                if (payload.type === "server.heartbeat") return
+
+                if (payload.type === "sync" && payload.syncEvent) {
+                  const failed = yield* events.replay(payload.syncEvent, { publish: true, ownerID: space.id }).pipe(
+                    Effect.as(false),
+                    Effect.catchCause((error) =>
+                      Effect.logWarning("failed to replay global event", error).pipe(
+                        Effect.annotateLogs({ workspaceID: space.id }),
+                        Effect.as(true),
+                      ),
                     ),
-                  ),
-                )
-                if (failed) return
-              }
+                  )
+                  if (failed) return
+                }
 
-              try {
-                const event = evt as { directory?: string; project?: string; payload: unknown }
-                GlobalBus.emit("event", {
-                  directory: event.directory,
-                  project: event.project,
-                  workspace: space.id,
-                  payload: event.payload,
-                })
-              } catch (error) {
-                yield* Effect.logWarning("failed to emit global event", {
-                  workspaceID: space.id,
-                  error: errorData(error),
-                })
-              }
-            }),
+                try {
+                  const event = evt as { directory?: string; project?: string; payload: unknown }
+                  GlobalBus.emit("event", {
+                    directory: event.directory,
+                    project: event.project,
+                    workspace: space.id,
+                    payload: event.payload,
+                  })
+                } catch (error) {
+                  yield* Effect.logWarning("failed to emit global event", {
+                    workspaceID: space.id,
+                    error: errorData(error),
+                  })
+                }
+              }),
+            ),
+            stale,
           )
 
           setStatus(space.id, "disconnected")
