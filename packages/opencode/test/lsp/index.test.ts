@@ -9,7 +9,7 @@ import { LSP } from "@/lsp/lsp"
 import { LSPClient } from "@/lsp/client"
 import * as LSPServer from "@/lsp/server"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { disposeAllInstances, provideTmpdirInstance, TestInstance } from "../fixture/fixture"
+import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 const lspLayer = (flags: Parameters<typeof RuntimeFlags.layer>[0] = {}) =>
@@ -32,7 +32,6 @@ const SWEEP_MS = 30_000
 let fake = false
 
 afterEach(async () => {
-  await disposeAllInstances()
   if (!fake) return
   jest.clearAllTimers()
   jest.useRealTimers()

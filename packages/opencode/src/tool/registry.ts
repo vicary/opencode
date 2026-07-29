@@ -54,6 +54,9 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Location } from "@opencode-ai/core/location"
+import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
@@ -66,7 +69,6 @@ type State = {
   custom: Tool.Def[]
   builtin: Tool.Def[]
   task: TaskDef
-  read: ReadDef
 }
 
 export interface Interface {
@@ -89,13 +91,15 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const plugin = yield* Plugin.Service
     const agents = yield* Agent.Service
+    const fs = yield* FSUtil.Service
+    const instruction = yield* Instruction.Service
     const truncate = yield* Truncate.Service
     const flags = yield* RuntimeFlags.Service
     const mcp = yield* MCP.Service
+    const locations = yield* LocationServiceMap.Service
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
-    const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
@@ -204,7 +208,6 @@ const layer = Layer.effect(
         const tool = yield* Effect.all({
           invalid: Tool.init(invalid),
           shell: Tool.init(shell),
-          read: Tool.init(read),
           glob: Tool.init(globtool),
           grep: Tool.init(greptool),
           edit: Tool.init(edit),
@@ -227,7 +230,6 @@ const layer = Layer.effect(
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
             tool.shell,
-            tool.read,
             tool.glob,
             tool.grep,
             tool.edit,
@@ -243,15 +245,35 @@ const layer = Layer.effect(
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
           task: tool.task,
-          read: tool.read,
         }
       }),
     )
 
-    const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
-      const s = yield* InstanceState.get(state)
-      return [...s.builtin, ...s.custom] as Tool.Def[]
-    })
+    const initRead = () =>
+      Effect.gen(function* () {
+        const ctx = yield* InstanceState.context
+        const location = locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))
+        return yield* Tool.init(
+          yield* ReadTool.pipe(
+            Effect.provide(location),
+            Effect.provideService(Agent.Service, agents),
+            Effect.provideService(FSUtil.Service, fs),
+            Effect.provideService(Instruction.Service, instruction),
+            Effect.provideService(RuntimeFlags.Service, flags),
+            Effect.provideService(Truncate.Service, truncate),
+          ),
+        )
+      }).pipe(Effect.provideService(LocationServiceMap.Service, locations))
+
+    const all: Interface["all"] = () =>
+      // @ts-ignore runtime-provided Location-backed read retains a phantom service in tsgo.
+      Effect.gen(function* () {
+        const s = yield* InstanceState.get(state)
+        const read = yield* initRead()
+        return s.builtin
+          .flatMap((tool) => (tool.id === ShellTool.id ? [tool, read] : [tool]))
+          .concat(s.custom) as Tool.Def[]
+      })
 
     const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
       return (yield* all()).map((tool) => tool.id)
@@ -334,10 +356,12 @@ const layer = Layer.effect(
       )
     })
 
-    const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {
-      const s = yield* InstanceState.get(state)
-      return { task: s.task, read: s.read }
-    })
+    const named: Interface["named"] = () =>
+      // @ts-ignore runtime-provided Location-backed read retains a phantom service in tsgo.
+      Effect.gen(function* () {
+        const s = yield* InstanceState.get(state)
+        return { task: s.task, read: yield* initRead() }
+      })
 
     return Service.of({ ids, all, named, tools })
   }),
@@ -419,6 +443,12 @@ function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+const locationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: locationServiceMapLayer,
+  deps: [],
+})
+
 export const node = LayerNode.make({
   service: Service,
   layer,
@@ -444,6 +474,7 @@ export const node = LayerNode.make({
     MCP.node,
     Database.node,
     Ripgrep.node,
+    locationServiceMapNode,
   ],
 })
 

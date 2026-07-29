@@ -1,4 +1,4 @@
-import { afterEach, expect } from "bun:test"
+import { expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -9,7 +9,7 @@ import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
 import { QuestionID } from "../../src/question/schema"
-import { disposeAllInstances, provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { Session } from "../../src/session/session"
 import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
@@ -51,10 +51,6 @@ const replyEffect = Effect.fn("QuestionTest.reply")(function* (input: {
 const rejectEffect = Effect.fn("QuestionTest.reject")(function* (id: QuestionID) {
   const question = yield* Question.Service
   yield* question.reject(id)
-})
-
-afterEach(async () => {
-  await disposeAllInstances()
 })
 
 /** Reject all pending questions so dangling Deferred fibers don't hang the test. */

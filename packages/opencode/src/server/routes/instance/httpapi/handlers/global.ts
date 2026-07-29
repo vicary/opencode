@@ -32,12 +32,13 @@ function parseBody(body: string) {
 }
 
 function abortEffect(request: HttpServerRequest.HttpServerRequest) {
-  if (request.source instanceof Request) {
-    if (request.source.signal.aborted) return Effect.void
+  const source = request.source
+  if (source instanceof Request) {
+    if (source.signal.aborted) return Effect.void
     return Effect.callback<void>((resume) => {
       const abort = () => resume(Effect.void)
-      request.source.signal.addEventListener("abort", abort, { once: true })
-      return Effect.sync(() => request.source.signal.removeEventListener("abort", abort))
+      source.signal.addEventListener("abort", abort, { once: true })
+      return Effect.sync(() => source.signal.removeEventListener("abort", abort))
     })
   }
 
@@ -97,9 +98,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return { healthy: true as const, version: InstallationVersion }
     })
 
-    const event = Effect.fn("GlobalHttpApi.event")(function* (ctx: {
-      request: HttpServerRequest.HttpServerRequest
-    }) {
+    const event = Effect.fn("GlobalHttpApi.event")(function* (ctx: { request: HttpServerRequest.HttpServerRequest }) {
       return yield* eventResponse(ctx.request)
     })
 

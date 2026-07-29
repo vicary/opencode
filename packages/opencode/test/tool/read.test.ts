@@ -1,6 +1,6 @@
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { afterEach, describe, expect } from "bun:test"
+import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer, Stream } from "effect"
 import path from "path"
@@ -8,6 +8,7 @@ import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
+import { RepositoryCache } from "@opencode-ai/core/repository-cache"
 import { Reference } from "@opencode-ai/core/reference"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -19,20 +20,10 @@ import { ReadTool } from "../../src/tool/read"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
 import { Filesystem } from "@/util/filesystem"
-import {
-  disposeAllInstances,
-  provideInstance,
-  testInstanceStoreLayer,
-  TestInstance,
-  tmpdirScoped,
-} from "../fixture/fixture"
+import { provideInstance, testInstanceStoreLayer, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
-
-afterEach(async () => {
-  await disposeAllInstances()
-})
 
 const ctx = {
   sessionID: SessionID.make("ses_test"),
@@ -62,7 +53,9 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       CrossSpawnSpawner.node,
       Instruction.node,
       LSP.node,
+      PluginV2.node,
       Reference.node,
+      RepositoryCache.node,
       Ripgrep.node,
       RuntimeFlags.node,
       Truncate.node,
@@ -299,6 +292,17 @@ describe("tool.read external_directory permission", () => {
             docs: "opencode-read-reference/repo",
           },
         },
+      })
+
+      const reference = yield* Reference.Service
+      yield* reference.transform((draft) => {
+        draft.add(
+          "docs",
+          Reference.GitSource.make({
+            type: "git",
+            repository: "opencode-read-reference/repo",
+          }),
+        )
       })
 
       const { items, next } = asks()

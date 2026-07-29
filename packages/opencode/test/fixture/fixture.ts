@@ -14,7 +14,6 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
 import type { InstanceContext } from "../../src/project/instance-context"
-import { InstanceRuntime } from "../../src/project/instance-runtime"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestLLMServer } from "../lib/llm-server"
 
@@ -28,6 +27,7 @@ export async function provideTestInstance<R>(input: {
   init?: Effect.Effect<void>
   fn: (ctx: InstanceContext) => R
 }) {
+  const { InstanceRuntime } = await import("../../src/project/instance-runtime")
   const ctx = await InstanceRuntime.load({ directory: input.directory })
   try {
     if (input.init) await Effect.runPromise(input.init.pipe(Effect.provideService(InstanceRef, ctx)))
@@ -38,14 +38,17 @@ export async function provideTestInstance<R>(input: {
 }
 
 export async function withTestInstance<R>(input: { directory: string; fn: (ctx: InstanceContext) => R }) {
+  const { InstanceRuntime } = await import("../../src/project/instance-runtime")
   return input.fn(await InstanceRuntime.load({ directory: input.directory }))
 }
 
 export async function reloadTestInstance(input: { directory: string }) {
+  const { InstanceRuntime } = await import("../../src/project/instance-runtime")
   return InstanceRuntime.reloadInstance(input)
 }
 
 export async function disposeAllInstances() {
+  const { InstanceRuntime } = await import("../../src/project/instance-runtime")
   await InstanceRuntime.disposeAllInstances()
 }
 
