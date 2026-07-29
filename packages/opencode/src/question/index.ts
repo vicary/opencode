@@ -1,6 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Deferred, Effect, Layer, Schema, Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
+import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { QuestionID } from "./schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -65,6 +66,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const sessions = yield* Session.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Question.state")(function* () {
         const state = {
@@ -84,6 +86,12 @@ const layer = Layer.effect(
       }),
     )
 
+    const rootSessionID = Effect.fn("Question.rootSessionID")(function* (sessionID: SessionID) {
+      const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+      if (!session.parentID) return session.id
+      return yield* rootSessionID(session.parentID)
+    })
+
     const ask = Effect.fn("Question.ask")(function* (input: {
       sessionID: SessionID
       questions: ReadonlyArray<Info>
@@ -91,12 +99,13 @@ const layer = Layer.effect(
     }) {
       const pending = (yield* InstanceState.get(state)).pending
       const id = QuestionID.ascending()
+      const sessionID = yield* rootSessionID(input.sessionID)
       yield* Effect.logInfo("asking", { id, questions: input.questions.length })
 
       const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
       const info: Request = {
         id,
-        sessionID: input.sessionID,
+        sessionID,
         questions: input.questions,
         tool: input.tool,
       }
@@ -156,6 +165,6 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node] })
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node, Session.node] })
 
 export * as Question from "."
