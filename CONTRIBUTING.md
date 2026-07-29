@@ -84,13 +84,13 @@ During development, `bun dev` is the local equivalent of the built `opencode` co
 # Development (from project root)
 bun dev --help           # Show all available commands
 bun dev serve            # Start headless API server
-bun dev web              # Start server + open web interface
+bun dev web              # Start server for the web interface
 bun dev <directory>      # Start TUI in specific directory
 
 # Production
 opencode --help          # Show all available commands
 opencode serve           # Start headless API server
-opencode web             # Start server + open web interface
+opencode web             # Start server for the web interface
 opencode <directory>     # Start TUI in specific directory
 ```
 
