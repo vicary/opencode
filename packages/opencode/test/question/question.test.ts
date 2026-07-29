@@ -1,6 +1,7 @@
 import { afterEach, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { eq } from "drizzle-orm"
 import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
@@ -16,7 +17,14 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 
 const questionLayer = LayerNode.compile(
-  LayerNode.group([Question.node, EventV2Bridge.node, CrossSpawnSpawner.node, Session.node, Database.node]),
+  LayerNode.group([
+    Question.node,
+    EventV2Bridge.node,
+    CrossSpawnSpawner.node,
+    Session.node,
+    SessionProjector.node,
+    Database.node,
+  ]),
 )
 const it = testEffect(questionLayer)
 const lifecycle = testEffect(Layer.mergeAll(questionLayer, testInstanceStoreLayer))
