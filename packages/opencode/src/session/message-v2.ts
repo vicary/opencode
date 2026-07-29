@@ -289,6 +289,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           })
         if (part.type === "tool") {
           toolNames.add(part.tool)
+          if (part.state.status === "pending") continue
           if (part.state.status === "completed") {
             const outputText = part.state.time.compacted
               ? "[Old tool result content cleared]"
@@ -346,9 +347,9 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               })
             }
           }
-          // Handle pending/running tool calls to prevent dangling tool_use blocks
+          // Handle running tool calls to prevent dangling tool_use blocks
           // Anthropic/Claude APIs require every tool_use to have a corresponding tool_result
-          if (part.state.status === "pending" || part.state.status === "running")
+          if (part.state.status === "running")
             assistantMessage.parts.push({
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-error",

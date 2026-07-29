@@ -1169,7 +1169,7 @@ describe("session.message-v2.toModelMessage", () => {
     expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([])
   })
 
-  test("converts pending/running tool calls to error results to prevent dangling tool_use", async () => {
+  test("skips pending tool stubs while closing running tool calls on replay", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"
 
@@ -1225,13 +1225,6 @@ describe("session.message-v2.toModelMessage", () => {
         content: [
           {
             type: "tool-call",
-            toolCallId: "call-pending",
-            toolName: "bash",
-            input: { cmd: "ls" },
-            providerExecuted: undefined,
-          },
-          {
-            type: "tool-call",
             toolCallId: "call-running",
             toolName: "read",
             input: { path: "/tmp" },
@@ -1242,12 +1235,6 @@ describe("session.message-v2.toModelMessage", () => {
       {
         role: "tool",
         content: [
-          {
-            type: "tool-result",
-            toolCallId: "call-pending",
-            toolName: "bash",
-            output: { type: "error-text", value: "[Tool execution was interrupted]" },
-          },
           {
             type: "tool-result",
             toolCallId: "call-running",
