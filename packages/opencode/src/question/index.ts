@@ -87,7 +87,9 @@ const layer = Layer.effect(
       }),
     )
 
-    const rootSessionID = Effect.fn("Question.rootSessionID")(function* (sessionID: SessionID, originalID = sessionID) {
+    const rootSessionID: (sessionID: SessionID, originalID?: SessionID) => Effect.Effect<SessionID> = Effect.fn(
+      "Question.rootSessionID",
+    )(function* (sessionID: SessionID, originalID = sessionID) {
       const session = yield* sessions
         .get(sessionID)
         .pipe(Effect.catchIf(Storage.NotFoundError.isInstance, () => Effect.succeed(undefined)))
