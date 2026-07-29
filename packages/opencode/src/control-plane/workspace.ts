@@ -32,7 +32,6 @@ import { WorkspaceRef } from "@/effect/instance-ref"
 import { Vcs } from "@/project/vcs"
 import { InstanceStore } from "@/project/instance-store"
 import { WorkspaceAdapterRuntime } from "./workspace-adapter-runtime"
-import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { WorkspaceEvent } from "@opencode-ai/schema/workspace-event"
 
 export const Info = Schema.Struct({
@@ -161,6 +160,7 @@ const layer = Layer.effect(
     const prompt = yield* SessionPrompt.Service
     const http = yield* HttpClient.HttpClient
     const events = yield* EventV2Bridge.Service
+    const store = yield* InstanceStore.Service
     const vcs = yield* Vcs.Service
     const flags = yield* RuntimeFlags.Service
     const fs = yield* FSUtil.Service
@@ -272,7 +272,6 @@ const layer = Layer.effect(
         const target = yield* WorkspaceAdapterRuntime.target(workspace)
 
         if (target.type === "local") {
-          const store = yield* InstanceStore.Service
           return yield* store.provide({ directory: target.directory }, input.local())
         }
 
@@ -619,7 +618,7 @@ const layer = Layer.effect(
                   }),
                 fallback: "",
                 response: "text",
-              }).pipe(Effect.provide(AppNodeBuilderV1.build(InstanceStore.node)))
+              })
             : ""
 
         if (sourcePatch) {
@@ -635,7 +634,7 @@ const layer = Layer.effect(
                 body: HttpBody.jsonUnsafe({ patch: sourcePatch }),
               }),
             fallback: { applied: false },
-          }).pipe(Effect.provide(AppNodeBuilderV1.build(InstanceStore.node)))
+          })
         }
 
         if (input.workspaceID === null) {
@@ -972,6 +971,7 @@ export const node = LayerNode.make({
     SessionPrompt.node,
     httpClient,
     EventV2Bridge.node,
+    InstanceStore.node,
     Vcs.node,
     RuntimeFlags.node,
     FSUtil.node,
