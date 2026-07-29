@@ -234,7 +234,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       )
     })
 
-    yield* sweepIdle.pipe(
+    yield* sweepIdle().pipe(
       Effect.repeat(Schedule.spaced(Duration.millis(INSTANCE_SWEEP_MS))),
       Effect.catchCause((cause) => Effect.logWarning("instance idle sweep failed", { cause })),
       Effect.forkIn(scope, { startImmediately: true }),
