@@ -8,7 +8,7 @@ import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
-import { Duration, Effect, Layer, Context, Schema, Schedule } from "effect"
+import { Effect, Layer, Context, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
@@ -227,14 +227,17 @@ const layer = Layer.effect(
           )
         })
 
-        yield* sweep.pipe(
-          Effect.repeat(Schedule.spaced(Duration.millis(LSP_SWEEP_MS))),
-          Effect.catchCause((cause) => Effect.logWarning("lsp idle sweep failed", { cause })),
-          Effect.forkScoped,
+        const timer = setInterval(
+          () =>
+            Effect.runFork(
+              sweep.pipe(Effect.catchCause((cause) => Effect.logWarning("lsp idle sweep failed", { cause }))),
+            ),
+          LSP_SWEEP_MS,
         )
 
         yield* Effect.addFinalizer(() =>
           Effect.promise(async () => {
+            clearInterval(timer)
             await Promise.all([...s.clients.values()].map((client) => client.info.shutdown()))
           }),
         )

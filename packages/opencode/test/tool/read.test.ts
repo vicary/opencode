@@ -45,6 +45,15 @@ const ctx = {
   ask: () => Effect.void,
 }
 
+const pluginLayer = Layer.succeed(
+  PluginV2.Service,
+  PluginV2.Service.of({
+    add: () => Effect.void,
+    remove: () => Effect.void,
+    wait: () => Effect.void,
+  }),
+)
+
 const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   LayerNode.compile(
     LayerNode.group([
@@ -53,13 +62,15 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       CrossSpawnSpawner.node,
       Instruction.node,
       LSP.node,
-      PluginV2.node,
       Reference.node,
       Ripgrep.node,
       RuntimeFlags.node,
       Truncate.node,
     ]),
-    [[RuntimeFlags.node, RuntimeFlags.layer(flags)]],
+    [
+      [PluginV2.node, pluginLayer],
+      [RuntimeFlags.node, RuntimeFlags.layer(flags)],
+    ],
   )
 
 const it = testEffect(Layer.mergeAll(readLayer(), testInstanceStoreLayer))

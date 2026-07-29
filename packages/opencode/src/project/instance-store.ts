@@ -177,7 +177,11 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       if (Exit.isFailure(exit)) return yield* Effect.failCause(exit.cause)
     })
 
-    const ensureEntry = Effect.fnUntraced(function* (
+    const ensureEntry: (
+      directory: string,
+      input: LoadInput,
+      restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<Entry> = Effect.fnUntraced(function* (
       directory: string,
       input: LoadInput,
       restore: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
