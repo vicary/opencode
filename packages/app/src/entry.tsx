@@ -7,6 +7,7 @@ import { type Platform, PlatformProvider } from "@/context/platform"
 import { dict as en } from "@/i18n/en"
 import { dict as zh } from "@/i18n/zh"
 import { handleNotificationClick } from "@/utils/notification-click"
+import { getPlatformVersion } from "@/utils/platform-version"
 import { authFromToken } from "@/utils/server"
 import pkg from "../package.json"
 import { ServerConnection } from "./context/server"
@@ -121,7 +122,7 @@ const clearAuthToken = () => {
 
 const platform: Platform = {
   platform: "web",
-  version: pkg.version,
+  version: getPlatformVersion(import.meta.env.VITE_OPENCODE_VERSION, pkg.version),
   openLink,
   back,
   forward,
