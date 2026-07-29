@@ -66,6 +66,8 @@ import { useLocation } from "@solidjs/router"
 import { attached, inline, kind, typeLabel } from "./message-file"
 import { readPartText } from "./message-part-text"
 import { SessionProgressIndicatorV2 } from "../v2/components/session-progress-indicator-v2"
+import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
+import { iconNames, type IconName } from "@opencode-ai/ui/icons/provider"
 
 async function writeClipboard(text: string): Promise<boolean> {
   const body = typeof document === "undefined" ? undefined : document.body
@@ -1236,6 +1238,12 @@ export function UserMessageDisplay(props: {
 
   const agents = createMemo(() => (props.parts?.filter((p) => p.type === "agent") as AgentPart[]) ?? [])
 
+  const provider = createMemo(() => {
+    const providerID = props.message.model?.providerID
+    if (!providerID) return
+    return iconNames.includes(providerID as IconName) ? providerID : undefined
+  })
+
   const model = createMemo(() => {
     const providerID = props.message.model?.providerID
     const modelID = props.message.model?.modelID
@@ -1251,10 +1259,9 @@ export function UserMessageDisplay(props: {
     return timefmt().format(created)
   })
 
-  const metaHead = createMemo(() => {
+  const metaAgent = createMemo(() => {
     const agent = props.message.agent
-    const items = [agent ? agent[0]?.toUpperCase() + agent.slice(1) : "", model()]
-    return items.filter((x) => !!x).join("\u00A0\u00B7\u00A0")
+    return agent ? agent[0]?.toUpperCase() + agent.slice(1) : ""
   })
 
   const metaTail = stamp
@@ -1360,14 +1367,27 @@ export function UserMessageDisplay(props: {
       <Show when={props.useV2Actions}>{renderAttachments()}</Show>
       <Show when={text() || (props.useV2Actions && messageComments().length > 0)}>
         <div data-slot="user-message-copy-wrapper">
-          <Show when={metaHead() || metaTail()}>
+          <Show when={metaAgent() || model() || metaTail()}>
             <span data-slot="user-message-meta-wrap">
-              <Show when={metaHead()}>
-                <span data-slot="user-message-meta" class="text-12-regular text-text-weak cursor-default">
-                  {metaHead()}
+              <Show when={metaAgent()}>
+                <span data-slot="user-message-meta-agent" class="text-12-regular text-text-weak cursor-default">
+                  {metaAgent()}
                 </span>
               </Show>
-              <Show when={metaHead() && metaTail()}>
+              <Show when={metaAgent() && model()}>
+                <span data-slot="user-message-meta-sep" class="text-12-regular text-text-weak cursor-default">
+                  {"\u00A0\u00B7\u00A0"}
+                </span>
+              </Show>
+              <Show when={model()}>
+                <span data-slot="user-message-meta-model" class="text-12-regular text-text-weak cursor-default">
+                  <Show when={provider()}>
+                    <ProviderIcon id={provider()!} class="size-3 shrink-0 opacity-60" aria-hidden="true" />
+                  </Show>
+                  <span data-slot="user-message-meta-model-label">{model()}</span>
+                </span>
+              </Show>
+              <Show when={(metaAgent() || model()) && metaTail()}>
                 <span data-slot="user-message-meta-sep" class="text-12-regular text-text-weak cursor-default">
                   {"\u00A0\u00B7\u00A0"}
                 </span>
