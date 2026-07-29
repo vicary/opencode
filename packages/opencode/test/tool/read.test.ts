@@ -1,3 +1,4 @@
+import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { afterEach, describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -52,6 +53,7 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       CrossSpawnSpawner.node,
       Instruction.node,
       LSP.node,
+      PluginV2.node,
       Reference.node,
       Ripgrep.node,
       RuntimeFlags.node,

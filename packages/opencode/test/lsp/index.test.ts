@@ -368,7 +368,7 @@ describe("lsp.spawn", () => {
                 yield* lsp.hover({ file: path.join(a, "one.ts"), line: 0, character: 0 })
                 yield* lsp.hover({ file: path.join(b, "two.ts"), line: 0, character: 0 })
                 yield* Effect.promise(() => tick(IDLE_MS - 1))
-                yield* lsp.workspaceSymbol("two")
+                yield* lsp.hover({ file: path.join(b, "two.ts"), line: 0, character: 0 })
                 yield* Effect.promise(() => tick(SWEEP_MS + 1))
                 expect(stop).toEqual([a])
                 yield* lsp.hover({ file: path.join(b, "two.ts"), line: 0, character: 0 })
