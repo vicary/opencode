@@ -1,5 +1,8 @@
 import { afterEach, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Database } from "@opencode-ai/core/database/database"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { eq } from "drizzle-orm"
 import { Cause, Effect, Exit, Fiber, Layer, Queue } from "effect"
 import { Question } from "../../src/question"
 import { InstanceRef } from "../../src/effect/instance-ref"
@@ -388,6 +391,35 @@ it.instance(
 
       const pending = yield* waitForPending(1)
       expect(pending[0].sessionID).toBe(root.id)
+      yield* rejectAll
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - keeps the original session when an ancestor is missing",
+  () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { db } = yield* Database.Service
+      const root = yield* sessions.create({ title: "root" })
+      const child = yield* sessions.create({ title: "child", parentID: root.id })
+      yield* db.delete(SessionTable).where(eq(SessionTable.id, root.id)).run().pipe(Effect.orDie)
+
+      const fiber = yield* askEffect({
+        sessionID: child.id,
+        questions: [
+          {
+            question: "Choose",
+            header: "Choice",
+            options: [{ label: "A", description: "Option A" }],
+          },
+        ],
+      }).pipe(Effect.forkScoped)
+
+      const pending = yield* waitForPending(1)
+      expect(pending[0].sessionID).toBe(child.id)
       yield* rejectAll
       expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
     }),
