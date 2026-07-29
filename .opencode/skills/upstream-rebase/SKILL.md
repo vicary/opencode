@@ -1,0 +1,46 @@
+---
+name: upstream-rebase
+description: Rebase this fork onto a newer upstream tag in an isolated worktree and replay only still-needed fork intent
+---
+
+# Upstream Rebase
+
+Use this when moving the fork onto a newer upstream tag.
+
+## Intent
+
+- Never rebase in the main checkout.
+- Do the work in an isolated `.worktrees/rebase-v<target>` checkout.
+- Treat fork commits as intent to replay, not patches to apply mechanically.
+- Drop commits that upstream already covers.
+- Rebuild the fork after the rebase completes.
+
+## Recommended workflow
+
+1. Start from a clean main checkout on the fork branch.
+2. Update upstream tags if needed.
+3. Create a dedicated rebase worktree and branch:
+
+```bash
+git worktree add -b rebase-v<target> .worktrees/rebase-v<target> <fork-branch>
+```
+
+4. In the rebase worktree, move the fork branch onto the new upstream tag.
+5. Replay the fork commit-by-commit in original order:
+   - inspect each commit's intent first
+   - if upstream already implements that behavior, drop it
+   - if the intent is still needed, reimplement it against the current file layout and architecture
+   - keep each replacement commit scoped to the original behavior only
+
+## Review rules while replaying
+
+- Prefer `git status`, `git diff`, and `git log --oneline` to keep the worktree auditable.
+- When a fork change is operational only, keep it in repo-local metadata like `.opencode/skills/*` instead of product code.
+- Use current repo conventions while rewriting: `packages/opencode` for the CLI package, `.worktrees/...` for isolated rebases, and `dev` as the default branch name.
+- If a commit conflicts with current upstream architecture, adapt the implementation to current files instead of forcing the old hunk layout.
+
+## Finish
+
+1. Verify the rebase worktree is clean.
+2. Rebuild the forked CLI with the `preview-build` skill.
+3. Verify the rebuilt binary reports the intended preview version before using it for further testing.
