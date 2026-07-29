@@ -3,6 +3,7 @@ import { Deferred, Effect, Layer, Schema, Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
+import { NotFoundError } from "@/storage/storage"
 import { QuestionID } from "./schema"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { QuestionV1 } from "@opencode-ai/schema/question-v1"
@@ -87,8 +88,10 @@ const layer = Layer.effect(
     )
 
     const rootSessionID = Effect.fn("Question.rootSessionID")(function* (sessionID: SessionID) {
-      const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
-      if (!session.parentID) return session.id
+      const session = yield* sessions
+        .get(sessionID)
+        .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
+      if (!session?.parentID) return session?.id ?? sessionID
       return yield* rootSessionID(session.parentID)
     })
 

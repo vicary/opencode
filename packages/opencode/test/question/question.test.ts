@@ -6,6 +6,7 @@ import { InstanceRef } from "../../src/effect/instance-ref"
 import { InstanceStore } from "../../src/project/instance-store"
 import { QuestionID } from "../../src/question/schema"
 import { disposeAllInstances, provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
+import { Session } from "../../src/session/session"
 import { SessionID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -361,6 +362,34 @@ it.instance(
     Effect.gen(function* () {
       const pending = yield* listEffect
       expect(pending.length).toBe(0)
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - hoists nested session questions to the root session",
+  () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const root = yield* sessions.create({ title: "root" })
+      const child = yield* sessions.create({ title: "child", parentID: root.id })
+      const grandchild = yield* sessions.create({ title: "grandchild", parentID: child.id })
+
+      const fiber = yield* askEffect({
+        sessionID: grandchild.id,
+        questions: [
+          {
+            question: "Choose",
+            header: "Choice",
+            options: [{ label: "A", description: "Option A" }],
+          },
+        ],
+      }).pipe(Effect.forkScoped)
+
+      const pending = yield* waitForPending(1)
+      expect(pending[0].sessionID).toBe(root.id)
+      yield* rejectAll
+      expect((yield* Fiber.await(fiber))._tag).toBe("Failure")
     }),
   { git: true },
 )
