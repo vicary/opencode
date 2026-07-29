@@ -87,12 +87,13 @@ const layer = Layer.effect(
       }),
     )
 
-    const rootSessionID = Effect.fn("Question.rootSessionID")(function* (sessionID: SessionID) {
+    const rootSessionID = Effect.fn("Question.rootSessionID")(function* (sessionID: SessionID, originalID = sessionID) {
       const session = yield* sessions
         .get(sessionID)
         .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
-      if (!session?.parentID) return session?.id ?? sessionID
-      return yield* rootSessionID(session.parentID)
+      if (!session) return originalID
+      if (!session.parentID) return session.id
+      return yield* rootSessionID(session.parentID, originalID)
     })
 
     const ask = Effect.fn("Question.ask")(function* (input: {
