@@ -5,7 +5,7 @@ import { SessionPermissionDock } from "@/pages/session/composer/session-permissi
 import { SessionQuestionDock } from "@/pages/session/composer/session-question-dock"
 import { SessionFollowupDock } from "@/pages/session/composer/session-followup-dock"
 import { SessionRevertDock } from "@/pages/session/composer/session-revert-dock"
-import { SessionTodoDock } from "@/pages/session/composer/session-todo-dock"
+import { SessionTodoDock, shouldAllowDockPointer } from "@/pages/session/composer/session-todo-dock"
 import type { SessionComposerRegionController } from "./session-composer-region-controller"
 
 export function SessionComposerRegion(props: {
@@ -64,7 +64,7 @@ export function SessionComposerRegion(props: {
             <div
               classList={{
                 "overflow-hidden": true,
-                "pointer-events-none": controller.dockProgress() < 0.98,
+                "pointer-events-none": !shouldAllowDockPointer(controller.dockProgress()),
               }}
               style={{
                 "max-height": `${controller.dockHeight() * controller.dockProgress()}px`,

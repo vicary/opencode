@@ -16,6 +16,10 @@ import { useSettings } from "@/context/settings"
 const doneToken = "\u0000done\u0000"
 const totalToken = "\u0000total\u0000"
 
+export const shouldBlockTodoPointer = (hide: number) => hide > 0.98
+
+export const shouldAllowDockPointer = (progress: number) => progress > 0.1
+
 function dot(status: Todo["status"]) {
   if (status !== "in_progress") return undefined
   return (
@@ -202,7 +206,7 @@ export function SessionTodoDock(props: {
           data-slot="session-todo-list"
           aria-hidden={props.collapsed || off()}
           classList={{
-            "pointer-events-none": hide() > 0.1,
+            "pointer-events-none": shouldBlockTodoPointer(hide()),
           }}
           style={{
             visibility: off() ? "hidden" : "visible",
