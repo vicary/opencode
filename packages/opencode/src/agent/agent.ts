@@ -185,6 +185,7 @@ const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
+                question: "allow",
                 todowrite: "deny",
               }),
               user,
@@ -273,8 +274,12 @@ const layer = Layer.effect(
           if (!item)
             item = agents[key] = {
               name: key,
-              mode: "all",
-              permission: Permission.merge(defaults, user),
+              mode: value.mode ?? "all",
+              permission: Permission.merge(
+                defaults,
+                value.mode === "subagent" ? Permission.fromConfig({ question: "allow" }) : [],
+                user,
+              ),
               options: {},
               native: false,
             }

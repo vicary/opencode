@@ -19,6 +19,7 @@ import { Config } from "@/config/config"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { Process } from "@/util/process"
 import { withTimeout } from "@/util/timeout"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { McpOAuthPendingProvider, McpOAuthProvider, OAUTH_CALLBACK_PATH } from "./oauth-provider"
@@ -26,11 +27,9 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Context, Schema } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
-import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
@@ -109,6 +108,27 @@ export type Status = Schema.Schema.Type<typeof Status>
 // Store transports for OAuth servers to allow finishing auth
 type TransportWithAuth = StreamableHTTPClientTransport | SSEClientTransport
 const pendingOAuthTransports = new Map<string, { transport: TransportWithAuth; provider?: McpOAuthPendingProvider }>()
+
+async function closePendingOAuthTransport(key: string) {
+  const pending = pendingOAuthTransports.get(key)
+  pendingOAuthTransports.delete(key)
+  if (!pending) return
+  await pending.transport.close().catch(() => undefined)
+}
+
+async function setPendingOAuthTransport(
+  key: string,
+  value: { transport: TransportWithAuth; provider?: McpOAuthPendingProvider },
+) {
+  await closePendingOAuthTransport(key)
+  pendingOAuthTransports.set(key, value)
+}
+
+async function clearPendingOAuthTransports() {
+  const transports = [...pendingOAuthTransports.values()]
+  pendingOAuthTransports.clear()
+  await Promise.allSettled(transports.map((item) => item.transport.close()))
+}
 
 // Prompt cache types
 type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][number]
@@ -204,7 +224,6 @@ export const use = serviceUse(Service)
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
@@ -309,16 +328,19 @@ const layer = Layer.effect(
                   })
                   .pipe(Effect.ignore, Effect.as(undefined))
               } else {
-                pendingOAuthTransports.set(key, { transport })
                 lastStatus = { status: "needs_auth" as const }
-                return events
-                  .publish(TuiEvent.ToastShow, {
-                    title: "MCP Authentication Required",
-                    message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
-                    variant: "warning",
-                    duration: 8000,
-                  })
-                  .pipe(Effect.ignore, Effect.as(undefined))
+                return Effect.promise(() => setPendingOAuthTransport(key, { transport })).pipe(
+                  Effect.andThen(
+                    events.publish(TuiEvent.ToastShow, {
+                      title: "MCP Authentication Required",
+                      message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
+                      variant: "warning",
+                      duration: 8000,
+                    }),
+                  ),
+                  Effect.ignore,
+                  Effect.as(undefined),
+                )
               }
             }
 
@@ -415,30 +437,6 @@ const layer = Layer.effect(
     )
     const cfgSvc = yield* Config.Service
 
-    const descendants = Effect.fnUntraced(
-      function* (pid: number) {
-        if (process.platform === "win32") return [] as number[]
-        const pids: number[] = []
-        const queue = [pid]
-        for (let index = 0; index < queue.length; index++) {
-          const current = queue[index]
-          const handle = yield* spawner.spawn(ChildProcess.make("pgrep", ["-P", String(current)], { stdin: "ignore" }))
-          const text = yield* Stream.mkString(Stream.decodeText(handle.stdout))
-          yield* handle.exitCode
-          for (const tok of text.split("\n")) {
-            const cpid = parseInt(tok, 10)
-            if (!isNaN(cpid) && !pids.includes(cpid)) {
-              pids.push(cpid)
-              queue.push(cpid)
-            }
-          }
-        }
-        return pids
-      },
-      Effect.scoped,
-      Effect.catch(() => Effect.succeed([] as number[])),
-    )
-
     function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
       client.onclose = () => {
         if (s.clients[name] !== client) return
@@ -489,6 +487,16 @@ const layer = Layer.effect(
       }
     }
 
+    function shutdownClient(client: MCPClient) {
+      const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
+      return Effect.gen(function* () {
+        if (typeof pid === "number") {
+          yield* Effect.tryPromise(() => Process.stopPid(pid)).pipe(Effect.ignore)
+        }
+        yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+      })
+    }
+
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
@@ -536,22 +544,10 @@ const layer = Layer.effect(
             s.instructions = {}
             yield* Effect.forEach(
               clients,
-              (client) =>
-                Effect.gen(function* () {
-                  const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
-                  if (typeof pid === "number") {
-                    const pids = yield* descendants(pid)
-                    for (const dpid of pids) {
-                      try {
-                        process.kill(dpid, "SIGTERM")
-                      } catch {}
-                    }
-                  }
-                  yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
-                }),
+              (client) => shutdownClient(client),
               { concurrency: "unbounded" },
             )
-            pendingOAuthTransports.clear()
+            yield* Effect.promise(() => clearPendingOAuthTransports()).pipe(Effect.ignore)
           }),
         )
 
@@ -565,7 +561,7 @@ const layer = Layer.effect(
       delete s.defs[name]
       delete s.instructions[name]
       if (!client) return Effect.void
-      return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+      return shutdownClient(client)
     }
 
     const storeClient = Effect.fnUntraced(function* (
@@ -584,7 +580,7 @@ const layer = Layer.effect(
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
       watch(s, name, client, bridge, timeout)
-      if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
+      if (previous) yield* shutdownClient(previous)
       return s.status[name]
     })
 
@@ -861,8 +857,9 @@ const layer = Layer.effect(
       }).pipe(
         Effect.catch((error) => {
           if (error instanceof UnauthorizedError && capturedUrl) {
-            pendingOAuthTransports.set(mcpName, { transport, provider: authProvider })
-            return Effect.succeed({ authorizationUrl: capturedUrl.toString(), oauthState } satisfies AuthResult)
+            return Effect.promise(() =>
+              setPendingOAuthTransport(mcpName, { transport, provider: authProvider }),
+            ).pipe(Effect.as({ authorizationUrl: capturedUrl.toString(), oauthState } satisfies AuthResult))
           }
           return Effect.die(error)
         }),
@@ -934,7 +931,7 @@ const layer = Layer.effect(
 
       yield* Effect.promise(() => pending.provider?.commit() ?? Promise.resolve())
       yield* auth.clearCodeVerifier(mcpName)
-      pendingOAuthTransports.delete(mcpName)
+      yield* Effect.promise(() => closePendingOAuthTransport(mcpName)).pipe(Effect.ignore)
 
       const mcpConfig = yield* requireMcpConfig(mcpName)
 
@@ -944,7 +941,7 @@ const layer = Layer.effect(
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {
       yield* auth.remove(mcpName)
       McpOAuthCallback.cancelPending(mcpName)
-      pendingOAuthTransports.delete(mcpName)
+      yield* Effect.promise(() => closePendingOAuthTransport(mcpName)).pipe(Effect.ignore)
     })
 
     const supportsOAuth = Effect.fn("MCP.supportsOAuth")(function* (mcpName: string) {
@@ -998,7 +995,7 @@ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node, McpBrowser.node],
+  deps: [McpAuth.node, EventV2Bridge.node, Config.node, McpBrowser.node],
 })
 
 export * as MCP from "."

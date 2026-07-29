@@ -144,22 +144,78 @@ export async function run(cmd: string[], opts: RunOptions = {}): Promise<Result>
   throw new RunFailedError(cmd, out.code, out.stdout, out.stderr)
 }
 
+async function descendants(pid: number) {
+  if (process.platform === "win32") return [] as number[]
+
+  const result: number[] = []
+  const seen = new Set<number>()
+  const queue = [pid]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (current === undefined) continue
+
+    const out = await run(["pgrep", "-P", String(current)], { nothrow: true })
+    if (out.code !== 0) continue
+
+    for (const line of out.stdout.toString().split(/\r?\n/)) {
+      const child = Number.parseInt(line, 10)
+      if (Number.isNaN(child) || seen.has(child)) continue
+      seen.add(child)
+      result.push(child)
+      queue.push(child)
+    }
+  }
+
+  return result
+}
+
+function running(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function signal(pid: number, sig: NodeJS.Signals | number) {
+  try {
+    process.kill(pid, sig)
+  } catch {}
+}
+
+export async function stopPid(pid: number, proc?: ChildProcess) {
+  if (proc && (proc.exitCode !== null || proc.signalCode !== null)) return
+
+  if (process.platform === "win32") {
+    const out = await run(["taskkill", "/pid", String(pid), "/T", "/F"], { nothrow: true })
+    if (out.code === 0) return
+    if (proc) {
+      proc.kill()
+      return
+    }
+    signal(pid, "SIGTERM")
+    return
+  }
+
+  const targets = [...(await descendants(pid)).reverse(), pid]
+  for (const target of targets) signal(target, "SIGTERM")
+  await Bun.sleep(100)
+  for (const target of targets.filter(running)) signal(target, "SIGKILL")
+}
+
 // Duplicated in `packages/sdk/js/src/process.ts` because the SDK cannot import
 // `opencode` without creating a cycle. Keep both copies in sync.
 export async function stop(proc: ChildProcess) {
   if (proc.exitCode !== null || proc.signalCode !== null) return
 
-  if (process.platform !== "win32" || !proc.pid) {
+  if (!proc.pid) {
     proc.kill()
     return
   }
 
-  const out = await run(["taskkill", "/pid", String(proc.pid), "/T", "/F"], {
-    nothrow: true,
-  })
-
-  if (out.code === 0) return
-  proc.kill()
+  await stopPid(proc.pid, proc)
 }
 
 export async function text(cmd: string[], opts: RunOptions = {}): Promise<TextResult> {
